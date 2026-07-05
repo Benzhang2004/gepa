@@ -10,6 +10,7 @@ from gepa.core.state import ProgramIdx
 
 if TYPE_CHECKING:
     from gepa.core.state import GEPAState
+    from gepa.strategies.eval_policy import EvaluationPolicy
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,10 @@ class GEPAResult(Generic[RolloutOutput, DataId]):
     run_dir: str | None = None
     seed: int | None = None
 
+    # Best candidate as chosen by the run's val_evaluation_policy. When None,
+    # best_idx falls back to the argmax of val_aggregate_scores.
+    policy_best_idx: int | None = None
+
     # When set, best_candidate unwraps the dict to return a plain str.
     # This is the internal dict key used to wrap str seed_candidates.
     _str_candidate_key: str | None = None
@@ -74,6 +79,8 @@ class GEPAResult(Generic[RolloutOutput, DataId]):
 
     @property
     def best_idx(self) -> int:
+        if self.policy_best_idx is not None:
+            return self.policy_best_idx
         scores = self.val_aggregate_scores
         return max(range(len(scores)), key=lambda i: scores[i])
 
@@ -143,6 +150,7 @@ class GEPAResult(Generic[RolloutOutput, DataId]):
             "run_dir": self.run_dir,
             "seed": self.seed,
             "_str_candidate_key": self._str_candidate_key,
+            "policy_best_idx": self.policy_best_idx,
             "best_idx": self.best_idx,
             "validation_schema_version": GEPAResult._VALIDATION_SCHEMA_VERSION,
         }
@@ -173,6 +181,7 @@ class GEPAResult(Generic[RolloutOutput, DataId]):
             "run_dir": d.get("run_dir"),
             "seed": d.get("seed"),
             "_str_candidate_key": d.get("_str_candidate_key"),
+            "policy_best_idx": d.get("policy_best_idx"),
         }
 
     @staticmethod
@@ -236,12 +245,16 @@ class GEPAResult(Generic[RolloutOutput, DataId]):
         run_dir: str | None = None,
         seed: int | None = None,
         str_candidate_key: str | None = None,
+        val_evaluation_policy: "EvaluationPolicy[DataId, Any] | None" = None,
     ) -> "GEPAResult[RolloutOutput, DataId]":
         """Build a GEPAResult from a GEPAState.
 
         Args:
             str_candidate_key: When set, ``best_candidate`` unwraps the internal
                 dict to return the plain ``str`` value stored under this key.
+            val_evaluation_policy: When set, ``best_idx`` reflects the policy's
+                ``get_best_program`` selection instead of the argmax of the
+                per-candidate average validation scores.
         """
         objective_scores_list = [dict(scores) for scores in state.prog_candidate_objective_scores]
         has_objective_scores = any(obj for obj in objective_scores_list)
@@ -267,5 +280,6 @@ class GEPAResult(Generic[RolloutOutput, DataId]):
             num_full_val_evals=getattr(state, "num_full_ds_evals", None),
             run_dir=run_dir,
             seed=seed,
+            policy_best_idx=(val_evaluation_policy.get_best_program(state) if val_evaluation_policy else None),
             _str_candidate_key=str_candidate_key,
         )

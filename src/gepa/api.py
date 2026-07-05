@@ -36,7 +36,12 @@ from gepa.strategies.component_selector import (
     AllReflectionComponentSelector,
     RoundRobinReflectionComponentSelector,
 )
-from gepa.strategies.eval_policy import EvaluationPolicy, FullEvaluationPolicy
+from gepa.strategies.eval_policy import (
+    EvaluationPolicy,
+    FullEvaluationPolicy,
+    SubsampleEvaluationPolicy,
+    UCBEvaluationPolicy,
+)
 from gepa.strategies.proposal_sampling import SamplingStrategy
 from gepa.strategies.proposal_selection import SelectionStrategy
 from gepa.utils import FileStopper, StopperProtocol
@@ -92,7 +97,7 @@ def optimize(
     # Reproducibility
     seed: int = 0,
     raise_on_exception: bool = True,
-    val_evaluation_policy: EvaluationPolicy[DataId, DataInst] | Literal["full_eval"] | None = None,
+    val_evaluation_policy: EvaluationPolicy[DataId, DataInst] | Literal["full_eval", "subsample", "ucb"] | None = None,
     acceptance_criterion: AcceptanceCriterion
     | Literal["strict_improvement", "improvement_or_equal"] = "strict_improvement",
     # Proposal strategies (default: 1 parent, 1 mutation per iteration)
@@ -187,7 +192,11 @@ def optimize(
 
     # Reproducibility
     - seed: The seed to use for the random number generator.
-    - val_evaluation_policy: Strategy controlling which validation ids to score each iteration and which candidate is currently best. Supported strings: "full_eval" (evaluate every id each time) Passing None defaults to "full_eval".
+    - val_evaluation_policy: Strategy controlling which validation ids to score for each accepted candidate and which candidate is currently best. Supported strings:
+      "subsample" (default): every candidate, seed included, is scored on a shared seeded random subsample of the valset — the full valset when it has at most 32 examples, otherwise max(32, 20% of the valset). This avoids spending a full validation eval on every accepted candidate (#103) while keeping candidate scores unbiased and mutually comparable. Pass "full_eval" to restore the previous behavior.
+      "full_eval": evaluate every validation id for every accepted candidate.
+      "ucb" (experimental): budget-aware explore/exploit scheduler (#34) — small shared subsamples while less than 70% of max_metric_calls is spent, full valset evals afterwards, and best-candidate selection by lower confidence bound (mean - standard error).
+      Passing None defaults to "subsample". An EvaluationPolicy instance may be passed for custom behavior.
     - raise_on_exception: Whether to propagate proposer/evaluator exceptions instead of stopping gracefully.
     """
     # Validate seed_candidate is not None or empty
@@ -239,7 +248,9 @@ def optimize(
     elif reflection_lm is not None:
         from gepa.lm import TrackingLM
 
-        reflection_lm_callable = TrackingLM(reflection_lm) if not hasattr(reflection_lm, "total_cost") else reflection_lm
+        reflection_lm_callable = (
+            TrackingLM(reflection_lm) if not hasattr(reflection_lm, "total_cost") else reflection_lm
+        )
     else:
         reflection_lm_callable = None
 
@@ -309,11 +320,19 @@ def optimize(
             "candidate_selection_strategy must be a supported string strategy or an instance of CandidateSelector."
         )
 
-    if val_evaluation_policy is None or val_evaluation_policy == "full_eval":
+    if val_evaluation_policy is None or val_evaluation_policy == "subsample":
+        # Default (#103): score candidates on a shared random subsample of the valset
+        # instead of running a full validation eval for every accepted candidate.
+        # Valsets of <= 32 examples are still evaluated in full.
+        val_evaluation_policy = SubsampleEvaluationPolicy(seed=seed)
+    elif val_evaluation_policy == "full_eval":
         val_evaluation_policy = FullEvaluationPolicy()
+    elif val_evaluation_policy == "ucb":
+        val_evaluation_policy = UCBEvaluationPolicy(total_metric_calls=max_metric_calls, seed=seed)
     elif not isinstance(val_evaluation_policy, EvaluationPolicy):
         raise ValueError(
-            f"val_evaluation_policy should be one of 'full_eval' or an instance of EvaluationPolicy, but got {type(val_evaluation_policy)}"
+            "val_evaluation_policy should be one of 'subsample', 'full_eval', 'ucb', or an instance of "
+            f"EvaluationPolicy, but got {type(val_evaluation_policy)}"
         )
 
     if isinstance(module_selector, str):
@@ -447,4 +466,4 @@ def optimize(
         else:
             state = engine.run()
 
-    return GEPAResult.from_state(state, run_dir=run_dir, seed=seed)
+    return GEPAResult.from_state(state, run_dir=run_dir, seed=seed, val_evaluation_policy=val_evaluation_policy)

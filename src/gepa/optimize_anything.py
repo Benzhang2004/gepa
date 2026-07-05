@@ -146,7 +146,12 @@ from gepa.strategies.component_selector import (
     AllReflectionComponentSelector,
     RoundRobinReflectionComponentSelector,
 )
-from gepa.strategies.eval_policy import EvaluationPolicy, FullEvaluationPolicy
+from gepa.strategies.eval_policy import (
+    EvaluationPolicy,
+    FullEvaluationPolicy,
+    SubsampleEvaluationPolicy,
+    UCBEvaluationPolicy,
+)
 from gepa.strategies.proposal_sampling import SamplingStrategy
 from gepa.strategies.proposal_selection import SelectionStrategy
 from gepa.utils import FileStopper, StopperProtocol
@@ -471,16 +476,16 @@ class EngineConfig:
     max_reflection_cost: float | None = None
 
     # Strategy selection for the engine
-    val_evaluation_policy: EvaluationPolicy | Literal["full_eval"] = "full_eval"
-    candidate_selection_strategy: CandidateSelector | Literal[
-        "pareto", "current_best", "epsilon_greedy", "top_k_pareto"
-    ] = "pareto"
+    val_evaluation_policy: EvaluationPolicy | Literal["full_eval", "subsample", "ucb"] = "full_eval"
+    candidate_selection_strategy: (
+        CandidateSelector | Literal["pareto", "current_best", "epsilon_greedy", "top_k_pareto"]
+    ) = "pareto"
     frontier_type: FrontierType = "hybrid"
 
     # Acceptance criterion for reflective mutation proposals
-    acceptance_criterion: AcceptanceCriterion | Literal[
-        "strict_improvement", "improvement_or_equal"
-    ] = "strict_improvement"
+    acceptance_criterion: AcceptanceCriterion | Literal["strict_improvement", "improvement_or_equal"] = (
+        "strict_improvement"
+    )
 
     # Parallelization settings for evaluation
     parallel: bool = True
@@ -637,9 +642,7 @@ def _build_seed_generation_prompt(
         examples = dataset[:3]
         example_lines = [f"- Example {i}: {ex}" for i, ex in enumerate(examples, 1)]
         sections.append(
-            "\n## Sample Inputs\n\n"
-            "The candidate will be evaluated on inputs like these:\n\n"
-            + "\n".join(example_lines)
+            "\n## Sample Inputs\n\nThe candidate will be evaluated on inputs like these:\n\n" + "\n".join(example_lines)
         )
 
     sections.append(
@@ -1438,9 +1441,16 @@ def optimize_anything(
     # --- 5. Build evaluation policy from EngineConfig ---
     if config.engine.val_evaluation_policy is None or config.engine.val_evaluation_policy == "full_eval":
         config.engine.val_evaluation_policy = FullEvaluationPolicy()
+    elif config.engine.val_evaluation_policy == "subsample":
+        config.engine.val_evaluation_policy = SubsampleEvaluationPolicy(seed=config.engine.seed)
+    elif config.engine.val_evaluation_policy == "ucb":
+        config.engine.val_evaluation_policy = UCBEvaluationPolicy(
+            total_metric_calls=config.engine.max_metric_calls, seed=config.engine.seed
+        )
     elif not isinstance(config.engine.val_evaluation_policy, EvaluationPolicy):
         raise ValueError(
-            f"val_evaluation_policy should be 'full_eval' or an EvaluationPolicy instance, but got {type(config.engine.val_evaluation_policy)}"
+            "val_evaluation_policy should be 'full_eval', 'subsample', 'ucb', or an EvaluationPolicy instance, "
+            f"but got {type(config.engine.val_evaluation_policy)}"
         )
 
     # --- 5b. Build acceptance criterion from EngineConfig ---
@@ -1626,4 +1636,5 @@ def optimize_anything(
         run_dir=config.engine.run_dir,
         seed=config.engine.seed,
         str_candidate_key=_STR_CANDIDATE_KEY if str_candidate_mode else None,
+        val_evaluation_policy=config.engine.val_evaluation_policy,
     )
