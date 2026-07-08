@@ -147,6 +147,7 @@ from gepa.strategies.component_selector import (
     RoundRobinReflectionComponentSelector,
 )
 from gepa.strategies.eval_policy import (
+    DynamicHoldoutEvaluationPolicy,
     EvaluationPolicy,
     FullEvaluationPolicy,
     SubsampleEvaluationPolicy,
@@ -476,7 +477,7 @@ class EngineConfig:
     max_reflection_cost: float | None = None
 
     # Strategy selection for the engine
-    val_evaluation_policy: EvaluationPolicy | Literal["full_eval", "subsample", "ucb"] = "full_eval"
+    val_evaluation_policy: EvaluationPolicy | Literal["full_eval", "subsample", "ucb", "dynamic_holdout"] = "full_eval"
     candidate_selection_strategy: (
         CandidateSelector | Literal["pareto", "current_best", "epsilon_greedy", "top_k_pareto"]
     ) = "pareto"
@@ -1447,10 +1448,12 @@ def optimize_anything(
         config.engine.val_evaluation_policy = UCBEvaluationPolicy(
             total_metric_calls=config.engine.max_metric_calls, seed=config.engine.seed
         )
+    elif config.engine.val_evaluation_policy == "dynamic_holdout":
+        config.engine.val_evaluation_policy = DynamicHoldoutEvaluationPolicy()
     elif not isinstance(config.engine.val_evaluation_policy, EvaluationPolicy):
         raise ValueError(
-            "val_evaluation_policy should be 'full_eval', 'subsample', 'ucb', or an EvaluationPolicy instance, "
-            f"but got {type(config.engine.val_evaluation_policy)}"
+            "val_evaluation_policy should be 'full_eval', 'subsample', 'ucb', 'dynamic_holdout', or an "
+            f"EvaluationPolicy instance, but got {type(config.engine.val_evaluation_policy)}"
         )
 
     # --- 5b. Build acceptance criterion from EngineConfig ---

@@ -37,6 +37,7 @@ from gepa.strategies.component_selector import (
     RoundRobinReflectionComponentSelector,
 )
 from gepa.strategies.eval_policy import (
+    DynamicHoldoutEvaluationPolicy,
     EvaluationPolicy,
     FullEvaluationPolicy,
     SubsampleEvaluationPolicy,
@@ -97,7 +98,9 @@ def optimize(
     # Reproducibility
     seed: int = 0,
     raise_on_exception: bool = True,
-    val_evaluation_policy: EvaluationPolicy[DataId, DataInst] | Literal["full_eval", "subsample", "ucb"] | None = None,
+    val_evaluation_policy: EvaluationPolicy[DataId, DataInst]
+    | Literal["full_eval", "subsample", "ucb", "dynamic_holdout"]
+    | None = None,
     acceptance_criterion: AcceptanceCriterion
     | Literal["strict_improvement", "improvement_or_equal"] = "strict_improvement",
     # Proposal strategies (default: 1 parent, 1 mutation per iteration)
@@ -196,6 +199,7 @@ def optimize(
       "subsample" (default): every candidate, seed included, is scored on a shared seeded random subsample of the valset — the full valset when it has at most 32 examples, otherwise max(32, 20% of the valset). This avoids spending a full validation eval on every accepted candidate (#103) while keeping candidate scores unbiased and mutually comparable. Pass "full_eval" to restore the previous behavior.
       "full_eval": evaluate every validation id for every accepted candidate.
       "ucb" (experimental): budget-aware explore/exploit scheduler (#34) — small shared subsamples while less than 70% of max_metric_calls is spent, full valset evals afterwards, and best-candidate selection by lower confidence bound (mean - standard error).
+      "dynamic_holdout": for the combined train+val workflow (pass the same data as trainset and valset, or valset=None which reuses the trainset) — each candidate is evaluated on exactly the examples not yet used in any reflection minibatch, so validation always measures data the proposer has not exploited yet. Falls back to full-pool evaluation once every example has been trained on.
       Passing None defaults to "subsample". An EvaluationPolicy instance may be passed for custom behavior.
     - raise_on_exception: Whether to propagate proposer/evaluator exceptions instead of stopping gracefully.
     """
@@ -329,10 +333,12 @@ def optimize(
         val_evaluation_policy = FullEvaluationPolicy()
     elif val_evaluation_policy == "ucb":
         val_evaluation_policy = UCBEvaluationPolicy(total_metric_calls=max_metric_calls, seed=seed)
+    elif val_evaluation_policy == "dynamic_holdout":
+        val_evaluation_policy = DynamicHoldoutEvaluationPolicy()
     elif not isinstance(val_evaluation_policy, EvaluationPolicy):
         raise ValueError(
-            "val_evaluation_policy should be one of 'subsample', 'full_eval', 'ucb', or an instance of "
-            f"EvaluationPolicy, but got {type(val_evaluation_policy)}"
+            "val_evaluation_policy should be one of 'subsample', 'full_eval', 'ucb', 'dynamic_holdout', or an "
+            f"instance of EvaluationPolicy, but got {type(val_evaluation_policy)}"
         )
 
     if isinstance(module_selector, str):

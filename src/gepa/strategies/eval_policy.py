@@ -244,10 +244,68 @@ class UCBEvaluationPolicy(SubsampleEvaluationPolicy):
         return best_idx
 
 
+class DynamicHoldoutEvaluationPolicy(EvaluationPolicy[DataId, DataInst]):
+    """Evaluate each candidate on every example not yet used for training (#125-style pooling).
+
+    Designed for the combined train+val workflow where the same examples — with the
+    same ids — serve as both trainset and valset (e.g. ``valset=None`` in
+    :func:`gepa.optimize`, which reuses the train loader). Each candidate is scored
+    on exactly the examples that have not appeared in any reflection minibatch so
+    far, so validation always measures behavior on data the reflective proposer has
+    not exploited yet, even though every example is eventually trained on.
+
+    The trained set is recovered from ``state.full_program_trace``, where the
+    reflective proposer records each iteration's minibatch ids (including rejected
+    proposals — reflection saw those examples too), so it survives run resumption.
+    The seed candidate is evaluated on the full pool (nothing is trained yet), and
+    once every example has been trained on the policy falls back to full-pool
+    evaluation, since no uncontaminated example remains.
+
+    Caveats: candidates are scored on different (shrinking) evaluation sets, so
+    aggregate scores are unbiased population estimates only while minibatch
+    sampling is random; and the trainset and valset must share the same id space
+    for the exclusion to be meaningful.
+    """
+
+    def get_eval_batch(
+        self, loader: DataLoader[DataId, DataInst], state: GEPAState, target_program_idx: ProgramIdx | None = None
+    ) -> list[DataId]:
+        """Return all ids not yet seen in a reflection minibatch, or all ids once none remain."""
+        trained = self._trained_ids(state)
+        all_ids = list(loader.all_ids())
+        untrained = [val_id for val_id in all_ids if val_id not in trained]
+        return untrained if untrained else all_ids
+
+    def get_seed_eval_batch(self, loader: DataLoader[DataId, DataInst]) -> list[DataId]:
+        """The seed is evaluated before any training, so the whole pool is untrained."""
+        return list(loader.all_ids())
+
+    @staticmethod
+    def _trained_ids(state: GEPAState) -> set:
+        """Union of all reflection-minibatch ids recorded in the optimization trace."""
+        trained: set = set()
+        for trace_entry in state.full_program_trace:
+            ids = trace_entry.get("subsample_ids")
+            if ids:
+                trained.update(ids)
+            for task_ids in trace_entry.get("all_subsample_ids") or []:
+                trained.update(task_ids)
+        return trained
+
+    def get_best_program(self, state: GEPAState) -> ProgramIdx:
+        """Pick the program whose evaluated validation scores achieve the highest average."""
+        return _best_program_by_average(state)
+
+    def get_valset_score(self, program_idx: ProgramIdx, state: GEPAState) -> float:
+        """Return the average score of the program over its evaluated validation ids."""
+        return state.get_program_average_val_subset(program_idx)[0]
+
+
 __all__ = [
     "DataLoader",
     "EvaluationPolicy",
     "FullEvaluationPolicy",
     "SubsampleEvaluationPolicy",
+    "DynamicHoldoutEvaluationPolicy",
     "UCBEvaluationPolicy",
 ]

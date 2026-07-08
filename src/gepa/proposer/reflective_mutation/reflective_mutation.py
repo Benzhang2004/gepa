@@ -302,6 +302,10 @@ class ReflectiveMutationProposer:
         first_task = tasks[0]
         state.full_program_trace[-1]["selected_program_candidate"] = first_task.parent_idx
         state.full_program_trace[-1]["subsample_ids"] = first_task.minibatch_ids
+        if len(tasks) > 1:
+            # Consumers such as DynamicHoldoutEvaluationPolicy need every trained id,
+            # not just the first task's.
+            state.full_program_trace[-1]["all_subsample_ids"] = [list(task.minibatch_ids) for task in tasks]
         self.logger.log(
             f"Iteration {i}: Selected program {first_task.parent_idx} "
             f"score: {state.program_full_scores_val_set[first_task.parent_idx]}"

@@ -237,3 +237,54 @@ class TestOptimizeIntegration:
         coverages = [len(scores) for scores in result.val_subscores]
         # Exploration-phase candidates are evaluated on min_size=16 examples.
         assert coverages[0] == 16
+
+
+class TestTrainExclusivePolicy:
+    def test_excludes_all_recorded_minibatch_ids(self):
+        from gepa.strategies.eval_policy import DynamicHoldoutEvaluationPolicy
+
+        state = make_state([{0: 1.0}])
+        state.full_program_trace.append({"i": 0, "subsample_ids": [1, 3]})
+        # Multi-task iterations record every task's minibatch under all_subsample_ids.
+        state.full_program_trace.append({"i": 1, "subsample_ids": [5], "all_subsample_ids": [[5], [7, 8]]})
+        loader = ListDataLoader([{"i": i} for i in range(10)])
+        policy = DynamicHoldoutEvaluationPolicy()
+
+        assert policy.get_eval_batch(loader, state) == [0, 2, 4, 6, 9]
+        assert policy.get_seed_eval_batch(loader) == list(range(10))
+
+    def test_falls_back_to_full_pool_when_everything_trained(self):
+        from gepa.strategies.eval_policy import DynamicHoldoutEvaluationPolicy
+
+        state = make_state([{0: 1.0}])
+        state.full_program_trace.append({"i": 0, "subsample_ids": list(range(10))})
+        loader = ListDataLoader([{"i": i} for i in range(10)])
+        policy = DynamicHoldoutEvaluationPolicy()
+
+        assert policy.get_eval_batch(loader, state) == list(range(10))
+
+    def test_optimize_with_combined_train_val_pool(self, tmp_path):
+        # valset=None reuses the trainset loader, giving the combined pool this
+        # policy is designed for.
+        trainset = [{"difficulty": 2 + (i % 5)} for i in range(20)]
+        result = gepa.optimize(
+            seed_candidate={"system_prompt": "weight=0"},
+            trainset=trainset,
+            adapter=WeightAdapter(),
+            reflection_lm=None,
+            max_metric_calls=80,
+            run_dir=str(tmp_path / "run"),
+            val_evaluation_policy="dynamic_holdout",
+        )
+
+        coverages = [len(scores) for scores in result.val_subscores]
+        # The seed sees the full untrained pool; every later candidate is evaluated
+        # only on examples its reflection minibatches have not touched.
+        assert coverages[0] == 20
+        assert len(coverages) >= 2
+        assert all(coverage < 20 for coverage in coverages[1:])
+
+        # The untrained pool only shrinks, so evaluation sets are nested.
+        id_sets = [set(scores.keys()) for scores in result.val_subscores]
+        for earlier, later in zip(id_sets, id_sets[1:], strict=False):
+            assert later <= earlier
