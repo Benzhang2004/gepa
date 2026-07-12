@@ -3,6 +3,7 @@
 
 """Sampling strategies for selecting (parent, minibatch) pairs each iteration."""
 
+import inspect
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -20,6 +21,22 @@ class ProposalTask:
     parent_candidate: dict[str, str]
     minibatch_ids: list
     minibatch: list
+
+
+def _next_minibatch_ids(batch_sampler: BatchSampler, trainset: DataLoader, state: GEPAState, parent_idx: int) -> list:
+    """Call the sampler, passing parent_idx only when its signature names it.
+
+    Keeps pre-existing two-argument BatchSampler implementations (and mocks)
+    working while parent-aware samplers (e.g. WorstFirstBatchSampler) receive
+    the candidate about to be mutated.
+    """
+    try:
+        params = inspect.signature(batch_sampler.next_minibatch_ids).parameters
+    except (TypeError, ValueError):
+        return batch_sampler.next_minibatch_ids(trainset, state)
+    if "parent_idx" in params:
+        return batch_sampler.next_minibatch_ids(trainset, state, parent_idx=parent_idx)
+    return batch_sampler.next_minibatch_ids(trainset, state)
 
 
 class SamplingStrategy(Protocol):
@@ -50,7 +67,7 @@ class SingleMutationSampling(SamplingStrategy):
         trainset: DataLoader,
     ) -> list[ProposalTask]:
         parent_idx = candidate_selector.select_candidate_idx(state)
-        mb_ids = batch_sampler.next_minibatch_ids(trainset, state)
+        mb_ids = _next_minibatch_ids(batch_sampler, trainset, state, parent_idx)
         return [ProposalTask(parent_idx, state.program_candidates[parent_idx], mb_ids, trainset.fetch(mb_ids))]
 
 
@@ -71,7 +88,7 @@ class SameParentSampling(SamplingStrategy):
         parent = state.program_candidates[parent_idx]
         tasks = []
         for _ in range(self.n):
-            mb_ids = batch_sampler.next_minibatch_ids(trainset, state)
+            mb_ids = _next_minibatch_ids(batch_sampler, trainset, state, parent_idx)
             tasks.append(ProposalTask(parent_idx, parent, mb_ids, trainset.fetch(mb_ids)))
         return tasks
 
@@ -92,7 +109,7 @@ class IndependentSampling(SamplingStrategy):
         tasks = []
         for _ in range(self.n):
             parent_idx = candidate_selector.select_candidate_idx(state)
-            mb_ids = batch_sampler.next_minibatch_ids(trainset, state)
+            mb_ids = _next_minibatch_ids(batch_sampler, trainset, state, parent_idx)
             tasks.append(ProposalTask(parent_idx, state.program_candidates[parent_idx], mb_ids, trainset.fetch(mb_ids)))
         return tasks
 
@@ -116,6 +133,6 @@ class PxNSampling(SamplingStrategy):
             parent_idx = candidate_selector.select_candidate_idx(state)
             parent = state.program_candidates[parent_idx]
             for _ in range(self.n):
-                mb_ids = batch_sampler.next_minibatch_ids(trainset, state)
+                mb_ids = _next_minibatch_ids(batch_sampler, trainset, state, parent_idx)
                 tasks.append(ProposalTask(parent_idx, parent, mb_ids, trainset.fetch(mb_ids)))
         return tasks

@@ -3,15 +3,24 @@
 
 import random
 from collections import Counter
-from typing import Protocol
+from typing import Literal, Protocol
 
 from gepa.core.adapter import DataInst
 from gepa.core.data_loader import DataId, DataLoader
-from gepa.core.state import GEPAState
+from gepa.core.state import GEPAState, ProgramIdx
 
 
 class BatchSampler(Protocol[DataId, DataInst]):
-    def next_minibatch_ids(self, loader: DataLoader[DataId, DataInst], state: GEPAState) -> list[DataId]: ...
+    """Selects the reflection minibatch for each proposal task.
+
+    ``parent_idx`` identifies the candidate about to be mutated. Sampling
+    strategies only pass it to implementations whose signature accepts it, so
+    pre-existing two-argument samplers keep working unchanged.
+    """
+
+    def next_minibatch_ids(
+        self, loader: DataLoader[DataId, DataInst], state: GEPAState, parent_idx: ProgramIdx | None = None
+    ) -> list[DataId]: ...
 
 
 class EpochShuffledBatchSampler(BatchSampler[DataId, DataInst]):
@@ -55,7 +64,9 @@ class EpochShuffledBatchSampler(BatchSampler[DataId, DataInst]):
                 self.shuffled_ids.append(selected_id)
                 self.id_freqs[selected_id] += 1
 
-    def next_minibatch_ids(self, loader: DataLoader[DataId, DataInst], state: GEPAState) -> list[DataId]:
+    def next_minibatch_ids(
+        self, loader: DataLoader[DataId, DataInst], state: GEPAState, parent_idx: ProgramIdx | None = None
+    ) -> list[DataId]:
         trainset_size = len(loader)
         if trainset_size == 0:
             raise ValueError("Cannot sample a minibatch from an empty loader.")
@@ -87,9 +98,22 @@ class WorstFirstBatchSampler(BatchSampler[DataId, DataInst]):
     reflection trains on them first — the score-deficit counterpart to weighting
     by cross-candidate variance (PR #338's LearnabilityBatchSampler).
 
-    Each example is weighted by its deficit ``best_pool_score - best_score``;
-    ids with no recorded score yet get the largest observed deficit (unexplored,
-    assume the worst). ``temperature`` controls concentration:
+    ``relative_to`` chooses whose failures define "worst":
+
+    - ``"parent"`` (default) — the deficit is measured against the score of the
+      parent candidate about to be mutated: ``best_pool_score - parent_score``.
+      This targets both globally unsolved examples and examples other candidates
+      solved but this parent fails — the latter are proven solvable, so they are
+      the parent's most learnable examples. (Equivalently: the sum of the pool
+      deficit ``best_pool - best_achieved`` and the parent's gap to the front
+      ``best_achieved - parent_score`` — the two terms telescope.) Ids the
+      parent has no score on fall back to the pool deficit.
+    - ``"pool"`` — the deficit is ``best_pool_score - best_achieved_score``,
+      parent-agnostic: only examples no candidate has solved get weight. Use
+      this to push every lineage at the unsolved frontier.
+
+    Ids with no recorded score at all get the largest observed deficit
+    (unexplored, assume the worst). ``temperature`` controls concentration:
 
     - ``0.0`` — deterministic: the ``minibatch_size`` worst examples, tie-broken
       toward the least-sampled so static scores still rotate through ties
@@ -108,6 +132,7 @@ class WorstFirstBatchSampler(BatchSampler[DataId, DataInst]):
         minibatch_size: int,
         temperature: float = 1.0,
         uniform_mix: float = 0.1,
+        relative_to: Literal["parent", "pool"] = "parent",
         rng: random.Random | None = None,
     ):
         if minibatch_size < 1:
@@ -116,13 +141,18 @@ class WorstFirstBatchSampler(BatchSampler[DataId, DataInst]):
             raise ValueError(f"temperature must be >= 0, got {temperature}")
         if not 0.0 <= uniform_mix <= 1.0:
             raise ValueError(f"uniform_mix must be in [0, 1], got {uniform_mix}")
+        if relative_to not in ("parent", "pool"):
+            raise ValueError(f"relative_to must be 'parent' or 'pool', got {relative_to!r}")
         self.minibatch_size = minibatch_size
         self.temperature = temperature
         self.uniform_mix = uniform_mix
+        self.relative_to = relative_to
         self.rng = rng if rng is not None else random.Random(0)
         self._sample_counts: Counter = Counter()
 
-    def _deficits(self, all_ids: list[DataId], state: GEPAState) -> dict[DataId, float] | None:
+    def _deficits(
+        self, all_ids: list[DataId], state: GEPAState, parent_idx: ProgramIdx | None
+    ) -> dict[DataId, float] | None:
         """Per-id score deficit vs. the best-scoring example; None if uninformative."""
         front = state.pareto_front_valset
         best_scores = {data_id: front[data_id] for data_id in all_ids if data_id in front}
@@ -130,18 +160,29 @@ class WorstFirstBatchSampler(BatchSampler[DataId, DataInst]):
             return None
         s_max = max(best_scores.values())
         s_min = min(best_scores.values())
-        if s_max <= s_min:
-            return None
-        # Ids never evaluated default to the observed minimum: unexplored, assume the worst.
-        return {data_id: s_max - best_scores.get(data_id, s_min) for data_id in all_ids}
 
-    def next_minibatch_ids(self, loader: DataLoader[DataId, DataInst], state: GEPAState) -> list[DataId]:
+        parent_scores: dict[DataId, float] = {}
+        if self.relative_to == "parent" and parent_idx is not None:
+            subscores = state.prog_candidate_val_subscores[parent_idx]
+            parent_scores = {data_id: subscores[data_id] for data_id in all_ids if data_id in subscores}
+
+        # Reference score per id: the parent's own score where measured (parent
+        # mode), otherwise the best any candidate achieved; never-evaluated ids
+        # default to the observed minimum — unexplored, assume the worst.
+        deficits = {data_id: s_max - parent_scores.get(data_id, best_scores.get(data_id, s_min)) for data_id in all_ids}
+        if max(deficits.values()) <= 0.0:
+            return None
+        return deficits
+
+    def next_minibatch_ids(
+        self, loader: DataLoader[DataId, DataInst], state: GEPAState, parent_idx: ProgramIdx | None = None
+    ) -> list[DataId]:
         all_ids = list(loader.all_ids())
         if not all_ids:
             raise ValueError("Cannot sample a minibatch from an empty loader.")
         k = min(self.minibatch_size, len(all_ids))
 
-        deficits = self._deficits(all_ids, state)
+        deficits = self._deficits(all_ids, state, parent_idx)
         if deficits is None:
             batch = self.rng.sample(all_ids, k)
         elif self.temperature == 0.0:

@@ -199,3 +199,86 @@ def test_worst_first_string_literal_wiring(tmp_path):
     # the first reflection minibatch.
     assert train_batches
     assert len(train_batches[0]) == 3
+
+
+class TestWorstFirstParentMode:
+    def _state(self):
+        # Pool front: id 0 solved (1.0), id 1 at 0.8, id 2 at 0.6.
+        # Parent (program 1) fails id 0 that others solved, matches the front on
+        # id 1, and has never been measured on id 2.
+        state = make_scored_state({0: 1.0, 1: 0.8, 2: 0.6})
+        state.prog_candidate_val_subscores = [
+            {0: 1.0, 1: 0.8, 2: 0.6},
+            {0: 0.2, 1: 0.8},
+        ]
+        state.program_candidates = [{"system_prompt": "seed"}, {"system_prompt": "p1"}]
+        return state
+
+    def test_parent_mode_targets_parent_failures(self):
+        from gepa.strategies.batch_sampler import WorstFirstBatchSampler
+
+        loader = ListDataLoader(["a", "b", "c"])
+        sampler = WorstFirstBatchSampler(minibatch_size=2, temperature=0.0)  # relative_to="parent" default
+
+        batch = sampler.next_minibatch_ids(loader, self._state(), parent_idx=1)
+        # Deficits vs the parent: id 0 -> 0.8 (solved elsewhere, parent fails),
+        # id 2 -> 0.4 (pool fallback, parent unmeasured), id 1 -> 0.2.
+        assert batch == [0, 2]
+
+    def test_pool_mode_ignores_parent(self):
+        from gepa.strategies.batch_sampler import WorstFirstBatchSampler
+
+        loader = ListDataLoader(["a", "b", "c"])
+        sampler = WorstFirstBatchSampler(minibatch_size=2, temperature=0.0, relative_to="pool")
+
+        batch = sampler.next_minibatch_ids(loader, self._state(), parent_idx=1)
+        # Pool deficits: id 2 -> 0.4, id 1 -> 0.2, id 0 -> 0.0 (already solved).
+        assert batch == [2, 1]
+
+    def test_no_parent_reduces_to_pool(self):
+        from gepa.strategies.batch_sampler import WorstFirstBatchSampler
+
+        loader = ListDataLoader(["a", "b", "c"])
+        sampler = WorstFirstBatchSampler(minibatch_size=2, temperature=0.0)
+
+        assert sampler.next_minibatch_ids(loader, self._state()) == [2, 1]
+
+    def test_invalid_relative_to(self):
+        from gepa.strategies.batch_sampler import WorstFirstBatchSampler
+
+        with pytest.raises(ValueError):
+            WorstFirstBatchSampler(minibatch_size=2, relative_to="combined")
+
+
+class TestParentAwareSamplingStrategies:
+    def test_legacy_two_arg_sampler_still_works(self):
+        from gepa.strategies.proposal_sampling import SingleMutationSampling
+
+        class LegacySampler:
+            def next_minibatch_ids(self, loader, state):
+                return [0, 1]
+
+        state = make_scored_state({0: 1.0})
+        state.program_candidates = [{"system_prompt": "seed"}]
+        selector = SimpleNamespace(select_candidate_idx=lambda s: 0)
+
+        tasks = SingleMutationSampling().sample_tasks(state, selector, LegacySampler(), ListDataLoader(["a", "b"]))
+        assert tasks[0].minibatch_ids == [0, 1]
+
+    def test_parent_idx_reaches_parent_aware_sampler(self):
+        from gepa.strategies.proposal_sampling import SingleMutationSampling
+
+        seen = []
+
+        class SpySampler:
+            def next_minibatch_ids(self, loader, state, parent_idx=None):
+                seen.append(parent_idx)
+                return [0]
+
+        state = make_scored_state({0: 1.0})
+        state.program_candidates = [{"system_prompt": "seed"}, {"system_prompt": "p1"}]
+        selector = SimpleNamespace(select_candidate_idx=lambda s: 1)
+
+        tasks = SingleMutationSampling().sample_tasks(state, selector, SpySampler(), ListDataLoader(["a", "b"]))
+        assert seen == [1]
+        assert tasks[0].parent_idx == 1
