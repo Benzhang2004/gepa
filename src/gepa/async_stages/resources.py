@@ -85,8 +85,11 @@ class Pool:
                 self._available -= need
                 self._in_flight += need
                 return need
-            if self.rate is None and self._in_flight == 0 and self._available == 0:
-                raise ResourceExhaustedError(f"{self.name}: nothing left and nothing in flight")
+            if self.rate is None and self._in_flight == 0:
+                # Nothing is out that could come back and nothing refills: this demand can never be met.
+                raise ResourceExhaustedError(
+                    f"{self.name}: {need} {self.unit}s asked, {self._available} left and nothing in flight"
+                )
             return 0.0
 
     def put(self, units: float, used: float = 0.0) -> None:

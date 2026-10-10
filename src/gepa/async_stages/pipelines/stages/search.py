@@ -274,7 +274,13 @@ class Commit(HeadStage[Proposal, Proposal]):
                     [obj_by[i] for i in ids] if obj_by else None,
                     split=VALSET_CACHE_SPLIT,
                 )
-            state.increment_evals(p.metric_calls)
+            # initialize_gepa_state already counts the seed's validation in total_num_evals. It also loads a saved
+            # state when run_dir holds one, in which case the pool resumes from that run.
+            if len(state.program_candidates) > 1 or state.total_num_evals != p.metric_calls:
+                deps.logger.log(
+                    f"Resumed a saved pool from {deps.run_dir}: {len(state.program_candidates)} candidates, "
+                    f"{state.total_num_evals} evaluations counted so far"
+                )
             deps.box.state = state
             new_idx = 0
         else:

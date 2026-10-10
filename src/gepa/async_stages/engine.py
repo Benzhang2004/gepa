@@ -292,8 +292,7 @@ class Engine:
                 self._begin_stop("exhausted")
                 return None
             if got <= 0:
-                self._rollback(taken, item)
-                self.events.resource(name).refused += 1
+                self._rollback(taken, item)  # not now: the loop asks again; only exhaustion counts as refused
                 return None
             taken[name] = got
             self.events.resource(name).taken += got
