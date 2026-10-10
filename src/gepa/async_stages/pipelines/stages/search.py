@@ -105,7 +105,6 @@ class Propose(WorkerStage[Proposal, Proposal]):
         else:
             self.module_selector = module_selector
         self._usd_estimate = usd_first_guess
-        self._calls = 0
 
     def demand(self, item: WorkItem[Proposal]) -> dict[str, float]:
         p = item.payload
@@ -141,9 +140,9 @@ class Propose(WorkerStage[Proposal, Proposal]):
         source = self.deps.lm_cost_source
         total = getattr(source, "total_cost", None)
         if isinstance(total, int | float):
-            self._calls += 1
+            self.deps.lm_calls["n"] += 1
             if total > 0:
-                self._usd_estimate = total / self._calls
+                self._usd_estimate = total / self.deps.lm_calls["n"]
 
 
 class StalenessGuard(HeadStage[Proposal, Proposal]):

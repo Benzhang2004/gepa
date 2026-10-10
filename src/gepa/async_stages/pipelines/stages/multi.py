@@ -222,7 +222,22 @@ def parse_generated(raw: str) -> str | None:
     return text or None
 
 
-class Reflect(WorkerStage[MultiProposal, Proposal]):
+class _RefitsUsd:
+    """Re-fit the per-call USD estimate from the LM's metered total, as the propose stage does. Reflect and generate
+    share the one metered total, so the call count is shared through ``deps.lm_calls``."""
+
+    deps: Deps
+    _demand: dict[str, float]
+
+    def after(self, item: WorkItem[Any]) -> None:
+        total = getattr(self.deps.lm_cost_source, "total_cost", None)
+        if isinstance(total, int | float):
+            self.deps.lm_calls["n"] += 1
+            if total > 0:
+                self._demand["usd"] = total / self.deps.lm_calls["n"]
+
+
+class Reflect(_RefitsUsd, WorkerStage[MultiProposal, Proposal]):
     """One reflection call over every rollout; fans out one proposal per slot (base parent + brief)."""
 
     in_type = MultiProposal
@@ -271,7 +286,7 @@ class Reflect(WorkerStage[MultiProposal, Proposal]):
         return outputs
 
 
-class Generate(WorkerStage[Proposal, Proposal]):
+class Generate(_RefitsUsd, WorkerStage[Proposal, Proposal]):
     """Implements one slot's brief on its base parent: a complete new text for the named component."""
 
     in_type = out_type = Proposal

@@ -74,6 +74,8 @@ class Deps:
     request_stop: Callable[[str], None]
     #: per-stage completion counters, set by the backend from the engine (the staleness guard reads them)
     counters: Mapping[str, int] = field(default_factory=dict)
+    #: Reflection-LM calls completed so far, shared by every LM stage so the metered total can be split per call.
+    lm_calls: dict[str, int] = field(default_factory=lambda: {"n": 0})
     str_candidate_key: str | None = None
     stop_at_score: float | None = None
     frontier_type: str = "hybrid"
