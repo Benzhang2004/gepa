@@ -11,11 +11,17 @@ from typing import Any
 
 from gepa.async_stages.pipeline import Pipeline
 from gepa.async_stages.pipelines.reflective import split_entry
+from gepa.async_stages.pipelines.resources import ProposalsInFlight, ReflectionLM
 from gepa.async_stages.pipelines.stages import Commit, Deps, Gate, Screen, StalenessGuard, Validate, validate_select
 from gepa.async_stages.pipelines.stages.multi import Generate, Reflect, RolloutMulti, SampleMulti
 
 
-def build(stage_opts: dict[str, dict[str, Any]], defaults: dict[str, Any], deps: Deps) -> Pipeline:
+def build(
+    stage_opts: dict[str, dict[str, Any]],
+    resource_opts: dict[str, dict[str, Any]],
+    defaults: dict[str, Any],
+    deps: Deps,
+) -> Pipeline:
     def o(name: str) -> dict[str, Any]:
         sched, opts = split_entry(stage_opts.get(name, {}))
         kw = dict(sched)
@@ -42,7 +48,10 @@ def build(stage_opts: dict[str, dict[str, Any]], defaults: dict[str, Any], deps:
     validate = Validate(deps, select=validate_select(select) if isinstance(select, str) else select, **validate_kw)
     commit = Commit(deps, **o("commit"))
 
-    pipeline = Pipeline()
+    pipeline = Pipeline().resource(
+        ReflectionLM(**resource_opts.get("reflection_lm", {})),
+        ProposalsInFlight(**resource_opts.get("proposals_in_flight", {})),
+    )
     chain = [sample, rollout, reflect, generate]
     if guard is not None:
         chain.append(guard)

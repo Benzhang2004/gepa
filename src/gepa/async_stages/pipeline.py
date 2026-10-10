@@ -1,11 +1,15 @@
 # Copyright (c) 2025 Lakshya A Agrawal and the GEPA contributors
 # https://github.com/gepa-ai/gepa
 
-"""A pipeline: stages and the edges that join a body's output to a downstream stage's place.
+"""A pipeline: stages, the edges that join a body's output to a downstream stage's place, and the resources the
+stages draw on.
 
 Edges may be labelled; a body tags an item to pick among several outgoing edges, and an untagged item takes the
-default edge. Cycles are allowed and expected: an optimization pipeline is a loop. The validator checks that
-edges name stages that exist and that the payload types on either end agree, nothing more.
+default edge. Cycles are allowed and expected: an optimization pipeline is a loop. A pipeline declares the
+resources its stages demand beyond the ones the engine shares with every pipeline (the optimize_anything budget
+and server limits); the engine holds them for the run. The validator checks that edges name stages that exist,
+that the payload types on either end agree, that every demand names a declared or shared resource, and that
+every config entry names a stage or resource of the pipeline.
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ from collections.abc import Iterable
 from itertools import pairwise
 from typing import Any
 
+from gepa.async_stages.resources import Resource
 from gepa.async_stages.stage import Stage
 
 
@@ -26,8 +31,17 @@ class Pipeline:
         self.stages: dict[str, Stage[Any, Any]] = {}
         #: (source stage name, label) -> destination stage name; label ``None`` is the default edge.
         self.edges: dict[tuple[str, str | None], str] = {}
+        #: The resources this pipeline declares, by name (beyond the engine's shared ones).
+        self.resources: dict[str, Resource] = {}
         for stage in stages:
             self.add(stage)
+
+    def resource(self, *resources: Resource) -> Pipeline:
+        for res in resources:
+            if res.name in self.resources and self.resources[res.name] is not res:
+                raise PipelineError(f"two resources named {res.name!r}")
+            self.resources[res.name] = res
+        return self
 
     def add(self, stage: Stage[Any, Any]) -> Pipeline:
         if stage.name in self.stages and self.stages[stage.name] is not stage:
@@ -61,7 +75,13 @@ class Pipeline:
             return None
         return self.stages[dst]
 
-    def validate(self, stage_names_in_config: Iterable[str] = ()) -> None:
+    def validate(
+        self,
+        stage_names_in_config: Iterable[str] = (),
+        resource_names_in_config: Iterable[str] = (),
+        shared: Iterable[str] = (),
+    ) -> None:
+        """``shared`` names the resources the engine provides to every pipeline (evals, evaluator, usd)."""
         for (src, label), dst in self.edges.items():
             if src not in self.stages or dst not in self.stages:
                 raise PipelineError(f"edge {src!r} -> {dst!r} (label {label!r}) names a stage that does not exist")
@@ -71,3 +91,18 @@ class Pipeline:
         unknown = [n for n in stage_names_in_config if n not in self.stages]
         if unknown:
             raise PipelineError(f"config names stages that are not in the pipeline: {unknown}")
+        shared_names = set(shared)
+        clash = sorted(set(self.resources) & shared_names)
+        if clash:
+            raise PipelineError(f"pipeline redefines shared resources: {clash}")
+        known = set(self.resources) | shared_names
+        for stage in self.stages.values():
+            for name in stage.nominal_demand:
+                if name not in known:
+                    raise PipelineError(
+                        f"stage {stage.name!r} demands resource {name!r}, which the pipeline does not declare "
+                        f"and the engine does not share (declared: {sorted(self.resources)}, shared: {sorted(shared_names)})"
+                    )
+        unknown = [n for n in resource_names_in_config if n not in known]
+        if unknown:
+            raise PipelineError(f"config names resources that are not in the pipeline: {unknown}")

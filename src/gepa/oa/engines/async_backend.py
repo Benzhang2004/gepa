@@ -3,10 +3,11 @@
 ``OptimizeAnythingConfig.engine_config`` keys:
 
 - ``pipeline``: ``{"name": <registered name or module path>, ...pipeline-wide defaults}`` (default ``reflective``).
-- ``resources``: flat pools by name. ``evals`` (``{"mode": "bulk" | "passthrough"}``, cap from the server) and
-  ``usd`` (cap from ``max_token_cost``) are built by the backend; ``evaluator`` (cap from the server's
-  ``max_concurrency``), ``reflection_lm`` and ``proposals_in_flight`` take ``{"cap": n}`` and an optional
-  ``rate`` (units per second); any further name is a user resource.
+- ``resources``: one entry per resource, by name, passed to its constructor. The backend provides the three that
+  come from optimize_anything: ``evals`` (``{"mode": "bulk" | "passthrough", "cap": n}``; the server's budget
+  tracker), ``evaluator`` (``{"cap": n}``, at most the server's ``max_concurrency``) and ``usd`` (``{"cap": n}``,
+  default ``max_token_cost``). Every other entry configures a resource the chosen pipeline declares
+  (``reflection_lm`` and ``proposals_in_flight`` in the shipped ones, each ``{"cap": n}``).
 - ``stages``: one entry per stage of the pipeline: the engine's scheduling keys (``workers``, ``max_workers``,
   ``max_queue``, ``select``, ``demand``, ``hold``) and the stage's own constructor options.
 - ``reflection_lm``: a model name or a callable; ``seed``; ``write_event_log``; ``isolate_errors``;
@@ -24,7 +25,8 @@ from typing import TYPE_CHECKING, Any, cast
 from gepa.async_stages.engine import Engine
 from gepa.async_stages.pipelines import resolve
 from gepa.async_stages.pipelines.stages import Deps, Proposal, StateBox
-from gepa.async_stages.resources import Evals, Pool
+from gepa.async_stages.resources import Evals, Evaluator, Usd
+from gepa.async_stages.stage import WorkerStage
 from gepa.oa.engine import Result
 
 if TYPE_CHECKING:
@@ -143,33 +145,33 @@ class AsyncBackend:
             background=task.background or "",
         )
 
-        # Resources: flat pools; evals and evaluator caps come from the server.
-        resources: dict[str, Any] = {}
+        # The resources every pipeline shares, from optimize_anything; the pipeline declares the rest.
         evals_cfg = self.resources_cfg.get("evals", {})
-        resources["evals"] = Evals(server.budget, mode=evals_cfg.get("mode", "bulk"), cap=evals_cfg.get("cap"))
-        usd_cfg = self.resources_cfg.get("usd", {})
-        resources["usd"] = Pool("usd", usd_cfg.get("cap", self.max_token_cost), unit="usd")
-        defaults = {
-            "evaluator": {"cap": server.max_concurrency},
-            "reflection_lm": {"cap": 4},
-            "proposals_in_flight": {"cap": 8},
+        evaluator_cap = min(
+            server.max_concurrency, int(self.resources_cfg.get("evaluator", {}).get("cap", server.max_concurrency))
+        )
+        shared: dict[str, Any] = {
+            "evals": Evals(server.budget, mode=evals_cfg.get("mode", "bulk"), cap=evals_cfg.get("cap")),
+            "evaluator": Evaluator(evaluator_cap),
+            "usd": Usd(self.resources_cfg.get("usd", {}).get("cap", self.max_token_cost)),
         }
-        for name, default in defaults.items():
-            entry = {**default, **self.resources_cfg.get(name, {})}
-            resources[name] = Pool(name, entry.get("cap"), rate=entry.get("rate"))
-        for name, entry in self.resources_cfg.items():
-            if name not in resources:
-                resources[name] = Pool(name, entry.get("cap"), unit=entry.get("unit", "unit"), rate=entry.get("rate"))
-        executors = {
-            name: int(res.cap) if res.cap is not None else 32
-            for name, res in resources.items()
-            if isinstance(res, Pool) and name not in ("evals", "usd", "proposals_in_flight")
-        }
+        resource_opts = {k: v for k, v in self.resources_cfg.items() if k not in shared}
 
         build = resolve(self.pipeline_cfg["name"])
         pipeline_defaults = {k: v for k, v in self.pipeline_cfg.items() if k != "name"}
-        pipeline = build(self.stages_cfg, pipeline_defaults, deps)
-        pipeline.validate(stage_names_in_config=list(self.stages_cfg))
+        pipeline = build(self.stages_cfg, resource_opts, pipeline_defaults, deps)
+        pipeline.validate(
+            stage_names_in_config=list(self.stages_cfg),
+            resource_names_in_config=list(resource_opts),
+            shared=list(shared),
+        )
+        resources = {**shared, **pipeline.resources}
+        # One thread pool per bandwidth, as wide as the stages that draw on it can be in flight.
+        executors: dict[str, int] = {}
+        for stage in pipeline.stages.values():
+            if isinstance(stage, WorkerStage) and stage.bandwidth:
+                executors[stage.bandwidth] = executors.get(stage.bandwidth, 0) + max(1, stage.workers)
+
         engine = Engine(
             pipeline,
             resources,

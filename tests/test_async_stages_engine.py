@@ -21,11 +21,12 @@ from gepa.async_stages import (
     HeadStage,
     Pipeline,
     PipelineError,
-    Pool,
     ResourceExhaustedError,
     WorkerStage,
     WorkItem,
 )
+from gepa.async_stages.pipelines.resources import ProposalsInFlight, ReflectionLM
+from gepa.async_stages.resources import Evaluator, Usd
 
 
 @dataclass
@@ -117,6 +118,22 @@ class Commit(HeadStage[Toy, Toy]):
         return [item]
 
 
+class Budget(Usd):
+    """A drained budget for the toy loop (the Usd logic under another name)."""
+
+    @property
+    def in_flight(self) -> float:
+        return self._out
+
+
+class Slots(Evaluator):
+    """Rented slots for the toy loop (the Evaluator logic under another name)."""
+
+    @property
+    def in_flight(self) -> float:
+        return self._out
+
+
 def build(*, evals: int, evaluator: int, in_flight: int = 2, accept_if=lambda t: True, stop_at=None, **eval_kw):
     source = Source(demand={"in_flight": 1}, hold=["in_flight"])
     evaluate = Evaluate(workers=4, **eval_kw)
@@ -125,9 +142,9 @@ def build(*, evals: int, evaluator: int, in_flight: int = 2, accept_if=lambda t:
     commit = Commit(stop_at=stop_at, engine_ref=ref)
     pipeline = Pipeline().chain(source, evaluate, gate).edge(gate, commit, "accepted").edge(commit, source)
     resources = {
-        "evals": Pool("evals", evals, unit="evaluation"),
-        "evaluator": Pool("evaluator", evaluator),
-        "in_flight": Pool("in_flight", in_flight),
+        "evals": Budget(evals, name="evals"),
+        "evaluator": Slots(evaluator),
+        "in_flight": Slots(in_flight, name="in_flight"),
     }
     engine = Engine(pipeline, resources, executors={"evaluator": evaluator}, write_event_log=False)
     ref["engine"] = engine
@@ -212,7 +229,7 @@ def test_worker_error_is_isolated_when_not_raising():
     gate = Gate(lambda t: True)
     commit = Commit()
     pipeline = Pipeline().chain(source, evaluate, gate).edge(gate, commit, "accepted").edge(commit, source)
-    resources = {"evals": Pool("evals", 12), "evaluator": Pool("evaluator", 4), "in_flight": Pool("in_flight", 2)}
+    resources = {"evals": Budget(12, name="evals"), "evaluator": Slots(4), "in_flight": Slots(2, name="in_flight")}
     engine = Engine(pipeline, resources, executors={"evaluator": 4}, write_event_log=False, raise_on_exception=False)
     engine.inject("source", Toy(parent=0, value=0.0, score=0.0))
     stats = engine.run()
@@ -241,20 +258,45 @@ def test_pipeline_validation():
         p.validate(stage_names_in_config=["zzz"])
 
 
-def test_pool_exhaustion_semantics():
-    pool = Pool("p", 3)
-    assert pool.take(2) == 2
-    assert pool.take(2) == 0  # not now: two are out and may come back
-    pool.put(2)
-    assert pool.take(3) == 3
-    pool.put(0, used=3)  # all consumed
+def test_shipped_resource_semantics():
+    usd = Usd(3.0)
+    assert usd.take(2) == 2
+    assert usd.take(2) == 0  # not now: two are out and may come back
+    usd.put(2)
+    assert usd.take(3) == 3
+    usd.put(0, used=3)  # all consumed
     with pytest.raises(ResourceExhaustedError):
-        pool.take(1)
-    assert Pool("q", 2).take(5) == 2  # a demand above the cap takes the whole pool
-    clock = Pool("c", 2, rate=1000.0)
-    assert clock.take(2) == 2
-    time.sleep(0.01)
-    assert clock.take(1) == 1  # refilled from the clock, never exhausted
+        usd.take(1)
+    assert Usd(None).take(50) == 50  # unbounded
+    ev = Evaluator(2)
+    assert ev.take(5) == 2  # a demand above the cap takes the whole cap and serializes inside
+    assert ev.take(1) == 0  # rented, so never exhausted: the units out come back
+    ev.put(2)
+    assert ev.take(1) == 1
+    lm = ReflectionLM(cap=1, name="generate_lm")
+    assert lm.name == "generate_lm" and lm.take(1) == 1 and lm.take(1) == 0
+    alive = ProposalsInFlight(cap=1)
+    assert alive.take(1) == 1 and alive.take(1) == 0
+    alive.put(1)
+    assert alive.take(1) == 1
+
+
+def test_pipeline_declares_its_resources():
+    class A(HeadStage[Toy, Toy]):
+        in_type = out_type = Toy
+
+        def run(self, item):
+            return [item]
+
+    p = Pipeline().chain(A("a", demand={"judge_lm": 1}))
+    with pytest.raises(PipelineError, match="demands resource 'judge_lm'"):
+        p.validate(shared=["evals"])
+    p.resource(ReflectionLM(cap=2, name="judge_lm"))
+    p.validate(shared=["evals"])
+    with pytest.raises(PipelineError, match="redefines shared"):
+        p.validate(shared=["judge_lm"])
+    with pytest.raises(PipelineError, match="config names resources"):
+        p.validate(resource_names_in_config=["nope"])
 
 
 def test_fatal_error_settles_work_still_in_flight():

@@ -1,7 +1,8 @@
 # Copyright (c) 2025 Lakshya A Agrawal and the GEPA contributors
 # https://github.com/gepa-ai/gepa
 
-"""Shipped pipelines, by name. A pipeline is a module with ``build(stage_opts, defaults, deps) -> Pipeline``."""
+"""Shipped pipelines, by name. A pipeline is a module with ``build(stage_opts, resource_opts, defaults, deps) -> Pipeline``,
+which declares its stages, its edges and its resources."""
 
 from __future__ import annotations
 

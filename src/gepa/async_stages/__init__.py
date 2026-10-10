@@ -8,19 +8,20 @@ Registered with optimize_anything as the ``"async"`` backend (:mod:`gepa.oa.engi
 
 from gepa.async_stages.engine import Engine
 from gepa.async_stages.pipeline import Pipeline, PipelineError
-from gepa.async_stages.resources import Evals, Pool, Resource, ResourceExhaustedError
+from gepa.async_stages.resources import Evals, Evaluator, Resource, ResourceExhaustedError, Usd
 from gepa.async_stages.stage import HeadStage, Stage, WorkerStage, WorkItem, by_key, fifo
 
 __all__ = [
     "Engine",
     "Evals",
+    "Evaluator",
     "HeadStage",
     "Pipeline",
     "PipelineError",
-    "Pool",
     "Resource",
     "ResourceExhaustedError",
     "Stage",
+    "Usd",
     "WorkItem",
     "WorkerStage",
     "by_key",

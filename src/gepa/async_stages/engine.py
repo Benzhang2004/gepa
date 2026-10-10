@@ -109,7 +109,7 @@ class Engine:
         return item
 
     def run(self) -> dict[str, Any]:
-        self.pipeline.validate()
+        self.pipeline.validate(shared=[n for n in self.resources if n not in self.pipeline.resources])
         for resource in self.resources.values():
             resource.open()
         self.events.emit("run_start", stages=list(self.pipeline.stages), resources=list(self.resources))
