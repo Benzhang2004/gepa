@@ -132,7 +132,7 @@ class Engine:
         finally:
             for ex in self._executors.values():
                 ex.shutdown(wait=True, cancel_futures=False)
-            self._drain_completions()
+            self._drain_completions(force=True)
             # Items still waiting in a consume place cannot run any more: end them so what they hold comes back.
             for name, stage in self.pipeline.stages.items():
                 if stage.mode != "consume":
@@ -157,6 +157,8 @@ class Engine:
         return any(self.places[n] for n, s in self.pipeline.stages.items() if s.mode == "consume")
 
     def _begin_stop(self, reason: str) -> None:
+        if self._stopping:
+            return
         self._stopping = True
         if self._stop_reason is None:
             self._stop_reason = reason
@@ -169,14 +171,16 @@ class Engine:
             return
         self._on_completion(c)
 
-    def _drain_completions(self) -> None:
+    def _drain_completions(self, force: bool = False) -> None:
+        """Settle every completion in the queue. After a fatal error the loop stops firing, but what completes
+        is still settled (``force``) so that every unit taken is accounted for."""
         while True:
             try:
                 c = self._completions.get_nowait()
             except queue.Empty:
                 return
             self._on_completion(c)
-            if self._fatal is not None:
+            if self._fatal is not None and not force:
                 return
 
     def _fire_all(self) -> int:
@@ -325,6 +329,12 @@ class Engine:
                 self._begin_stop("error")
             return
         self.counters[stage.name] += 1
+        if self._fatal is not None:
+            # The run is aborting: book what this firing used and end the item; nothing is routed any more.
+            self._settle(stage, item, firing.demand, used=stage.used(item))
+            if stage.mode == "consume":
+                self._end_item(item, "unfinished")
+            return
         try:
             stage.after(item)
         except Exception as e:

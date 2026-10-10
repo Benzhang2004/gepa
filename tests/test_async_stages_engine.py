@@ -255,3 +255,15 @@ def test_pool_exhaustion_semantics():
     assert clock.take(2) == 2
     time.sleep(0.01)
     assert clock.take(1) == 1  # refilled from the clock, never exhausted
+
+
+def test_fatal_error_settles_work_still_in_flight():
+    """A worker fails while other firings are running: the run aborts, but every completion that arrives while
+    draining is still booked, so nothing stays in flight on any pool (the flow-matic smoke-run bug)."""
+    engine, source, evaluate, gate, commit, resources = build(
+        evals=200, evaluator=8, in_flight=6, fail_on={3.0}, delay=0.02
+    )
+    with pytest.raises(RuntimeError, match="boom"):
+        engine.run()
+    assert_settled(engine, resources)
+    assert engine.stats["stop_reason"] == "error"

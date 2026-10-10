@@ -130,7 +130,9 @@ class Evals(Pool):
 
     def close(self) -> None:
         if self.mode == "bulk":
-            unused = int(self._leased - self._used)
+            # The server committed each evaluation that ran against the lease; give back what is still reserved,
+            # never more than the tracker holds (another engine may share it).
+            unused = min(int(self._leased - self._used), int(self.tracker.reserved))
             if unused > 0:
                 self.tracker.release(unused)
             self._leased = 0.0
