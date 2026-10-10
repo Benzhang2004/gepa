@@ -177,6 +177,7 @@ class AsyncBackend:
             run_dir=run_dir,
             write_event_log=self.write_event_log,
             raise_on_exception=not self.isolate_errors,
+            gap_watch="commit" if "commit" in pipeline.stages else None,
         )
         engine_ref["engine"] = engine
         deps.counters = engine.counters

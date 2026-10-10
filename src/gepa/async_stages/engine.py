@@ -19,6 +19,7 @@ import queue
 import threading
 import time
 import traceback
+from collections import Counter
 from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -64,8 +65,12 @@ class Engine:
         poll_interval_seconds: float = 0.02,
         raise_on_exception: bool = True,
         on_item_end: Callable[[WorkItem[Any], str], None] | None = None,
+        gap_watch: str | None = None,
     ):
         self.pipeline = pipeline
+        #: When set, every fire records how many completions of this stage happened since the item was created
+        #: (its distribution per stage is ``stats["gaps"]``; "commit" in the shipped pipelines).
+        self.gap_watch = gap_watch
         self.resources = dict(resources)
         self.run_dir = run_dir
         self.poll_interval = poll_interval_seconds
@@ -240,6 +245,10 @@ class Engine:
         self.inflight[stage.name] += 1
         st = self.events.stage(stage.name)
         st.fired += 1
+        if self.gap_watch is not None and stage.mode == "consume":
+            self.events.gaps.setdefault(stage.name, Counter())[
+                item.gap(self.gap_watch, self.counters[self.gap_watch])
+            ] += 1
         self.events.emit("fire", stage=stage.name, item=item.id, demand=taken, queue=len(place))
         if isinstance(stage, WorkerStage):
             bandwidth = stage.bandwidth or ""
