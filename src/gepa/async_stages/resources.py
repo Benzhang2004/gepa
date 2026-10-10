@@ -108,11 +108,12 @@ class Pool:
 class Evals(Pool):
     """The proxy of the optimize_anything eval budget: upstream is the eval server's ``BudgetTracker``.
 
-    ``bulk`` (the default): ``open`` reserves the whole allotment from the tracker, take and put are local, and
-    ``close`` releases what was reserved but never run (the server commits each evaluation that runs, since the
-    evaluation stages call it with ``reserved=True``). ``passthrough``: every take is forwarded as a reserve and
-    every put as a release of the unused part, as they happen, for a server shared with engines running at the
-    same time.
+    ``bulk`` (the default): ``open`` reserves, before anything runs, the budget the entire run needs (the ``cap``
+    the user set, or everything the tracker still has), so no backend sharing the server can race this engine
+    for it; take and put are then local, the server books each evaluation that runs against the reservation
+    (the evaluation stages call it with ``reserved=True``), and ``close`` releases what was leased but never run.
+    ``passthrough``: every take is forwarded as a reserve and every put as a release of the unused part, as they
+    happen, for a server shared with engines running at the same time.
     """
 
     def __init__(self, tracker: Any, *, mode: str = "bulk", cap: int | None = None):
