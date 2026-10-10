@@ -3,11 +3,10 @@
 ``OptimizeAnythingConfig.engine_config`` keys:
 
 - ``pipeline``: ``{"name": <registered name or module path>, ...pipeline-wide defaults}`` (default ``reflective``).
-- ``resources``: flat caps by name, booked by the engine. ``evals`` (``{"mode": "bulk" | "passthrough",
-  "cap": n}``; its upstream is the server's budget tracker, and ``cap`` is the slice leased for the run) and
+- ``resources``: flat pools by name. ``evals`` (``{"mode": "bulk" | "passthrough"}``, cap from the server) and
   ``usd`` (cap from ``max_token_cost``) are built by the backend; ``evaluator`` (cap from the server's
-  ``max_concurrency``), ``reflection_lm`` and ``proposals_in_flight`` take ``{"cap": n}``; any further name is a
-  user resource with a cap.
+  ``max_concurrency``), ``reflection_lm`` and ``proposals_in_flight`` take ``{"cap": n}`` and an optional
+  ``rate`` (units per second); any further name is a user resource.
 - ``stages``: one entry per stage of the pipeline: the engine's scheduling keys (``workers``, ``max_workers``,
   ``max_queue``, ``select``, ``demand``, ``hold``) and the stage's own constructor options.
 - ``reflection_lm``: a model name or a callable; ``seed``; ``write_event_log``; ``isolate_errors``;
@@ -25,7 +24,7 @@ from typing import TYPE_CHECKING, Any, cast
 from gepa.async_stages.engine import Engine
 from gepa.async_stages.pipelines import resolve
 from gepa.async_stages.pipelines.stages import Deps, Proposal, StateBox
-from gepa.async_stages.resources import Evals
+from gepa.async_stages.resources import Evals, Pool
 from gepa.oa.engine import Result
 
 if TYPE_CHECKING:
@@ -144,29 +143,27 @@ class AsyncBackend:
             background=task.background or "",
         )
 
-        # Resources: flat caps booked by the engine; evals has the server's tracker as its upstream.
-        caps: dict[str, float | None] = {}
-        for name, entry in self.resources_cfg.items():
-            unknown = set(entry) - ({"cap", "mode"} if name == "evals" else {"cap"})
-            if unknown:
-                raise TypeError(f"resource {name!r}: unknown option(s) {sorted(unknown)}; a resource is a cap")
+        # Resources: flat pools; evals and evaluator caps come from the server.
+        resources: dict[str, Any] = {}
         evals_cfg = self.resources_cfg.get("evals", {})
-        upstreams = {"evals": Evals(server.budget, mode=evals_cfg.get("mode", "bulk"), cap=evals_cfg.get("cap"))}
-        caps["evals"] = None  # leased at open in bulk mode, asked per take in passthrough
-        caps["usd"] = self.resources_cfg.get("usd", {}).get("cap", self.max_token_cost)
-        defaults: dict[str, float | None] = {
-            "evaluator": server.max_concurrency,
-            "reflection_lm": 4,
-            "proposals_in_flight": 8,
+        resources["evals"] = Evals(server.budget, mode=evals_cfg.get("mode", "bulk"), cap=evals_cfg.get("cap"))
+        usd_cfg = self.resources_cfg.get("usd", {})
+        resources["usd"] = Pool("usd", usd_cfg.get("cap", self.max_token_cost), unit="usd")
+        defaults = {
+            "evaluator": {"cap": server.max_concurrency},
+            "reflection_lm": {"cap": 4},
+            "proposals_in_flight": {"cap": 8},
         }
         for name, default in defaults.items():
-            caps[name] = self.resources_cfg.get(name, {}).get("cap", default)
+            entry = {**default, **self.resources_cfg.get(name, {})}
+            resources[name] = Pool(name, entry.get("cap"), rate=entry.get("rate"))
         for name, entry in self.resources_cfg.items():
-            caps.setdefault(name, entry.get("cap"))
+            if name not in resources:
+                resources[name] = Pool(name, entry.get("cap"), unit=entry.get("unit", "unit"), rate=entry.get("rate"))
         executors = {
-            name: int(cap) if cap is not None else 32
-            for name, cap in caps.items()
-            if name not in ("evals", "usd", "proposals_in_flight")
+            name: int(res.cap) if res.cap is not None else 32
+            for name, res in resources.items()
+            if isinstance(res, Pool) and name not in ("evals", "usd", "proposals_in_flight")
         }
 
         build = resolve(self.pipeline_cfg["name"])
@@ -175,8 +172,7 @@ class AsyncBackend:
         pipeline.validate(stage_names_in_config=list(self.stages_cfg))
         engine = Engine(
             pipeline,
-            caps,
-            upstreams=upstreams,
+            resources,
             executors=executors,
             run_dir=run_dir,
             write_event_log=self.write_event_log,
