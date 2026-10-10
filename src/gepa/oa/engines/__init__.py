@@ -1,5 +1,6 @@
 """Built-in engines. Importing this package registers each engine by name."""
 
+from gepa.oa.engines.async_backend import AsyncBackend
 from gepa.oa.engines.autoresearch import AutoResearchEngine
 from gepa.oa.engines.best_of_n import BestOfNEngine
 from gepa.oa.engines.gepa import GepaEngine
@@ -10,5 +11,6 @@ register_engine("gepa", GepaEngine)
 register_engine("autoresearch", AutoResearchEngine)
 register_engine("meta_harness", MetaHarnessEngine)
 register_engine("best_of_n", BestOfNEngine)
+register_engine("async", AsyncBackend)
 
-__all__ = ["AutoResearchEngine", "BestOfNEngine", "GepaEngine", "MetaHarnessEngine"]
+__all__ = ["AsyncBackend", "AutoResearchEngine", "BestOfNEngine", "GepaEngine", "MetaHarnessEngine"]
