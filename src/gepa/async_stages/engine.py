@@ -295,6 +295,7 @@ class Engine:
                 self._rollback(taken, item)  # not now: the loop asks again; only exhaustion counts as refused
                 return None
             taken[name] = got
+        for name, got in taken.items():  # count only a demand that was taken whole
             self.events.resource(name).taken += got
             self._in_flight_units[name] = self._in_flight_units.get(name, 0.0) + got
         return taken
@@ -302,9 +303,7 @@ class Engine:
     def _rollback(self, taken: Mapping[str, float], item: WorkItem[Any]) -> None:
         for name, units in taken.items():
             if units > 0:
-                self.resources[name].put(units)
-                self.events.resource(name).put_back += units
-                self._in_flight_units[name] -= units
+                self.resources[name].put(units)  # never counted as taken or in flight: the demand was not met whole
 
     # ------------------------------------------------------------------ completion and routing
 
