@@ -112,7 +112,14 @@ class Stage(Generic[In, Out]):
     # -- what the engine asks ---------------------------------------------
 
     def demand(self, item: WorkItem[In]) -> dict[str, float]:
-        """Units per resource the engine must take before ``run``; the constructor's ``demand`` by default."""
+        """Units per resource the engine takes before ``run``: the stage's nominal cost, constant per stage so the
+        engine can predict it (the constructor's ``demand``). What a firing actually spent is what ``used`` reports;
+        the rest comes back. Called on the engine thread."""
+        return dict(self._demand)
+
+    @property
+    def nominal_demand(self) -> dict[str, float]:
+        """The declared cost per firing, readable before anything runs."""
         return dict(self._demand)
 
     def used(self, item: WorkItem[In]) -> dict[str, float]:

@@ -2,9 +2,11 @@
 # https://github.com/gepa-ai/gepa
 
 """Evaluation stages: rollout (the parent on its minibatch), screen (the child on it), validate (the child on the
-valset). All three call the eval server directly, against the ``evals`` reservation the engine took at dispatch, and
-count only cache misses as demand. Cache reads happen in ``demand`` and cache writes in ``after``, both on the
-engine thread, so the GEPAState cache is never touched from a worker."""
+valset). All three call the eval server directly, against the ``evals`` reservation the engine took at dispatch.
+Their demand is nominal and constant per stage (the minibatch, the valset) so the engine can predict it; what a
+firing actually evaluated, the cache misses, is what ``used`` reports, and the rest comes back. Cache reads happen
+in ``demand`` and cache writes in ``after``, both on the engine thread, so the GEPAState cache is never touched
+from a worker."""
 
 from __future__ import annotations
 
@@ -75,7 +77,9 @@ class _MinibatchEval(WorkerStage[Proposal, Proposal]):
     in_type = out_type = Proposal
     split = TRAINSET_CACHE_SPLIT
 
-    def __init__(self, name: str, deps: Deps, **kw: Any):
+    def __init__(self, name: str, deps: Deps, *, minibatch_size: int = 3, **kw: Any):
+        # Nominal cost, constant per stage: the minibatch. Cache hits come back as unused at completion.
+        kw.setdefault("demand", {"evaluator": minibatch_size, "evals": minibatch_size})
         super().__init__(name, bandwidth="evaluator", **kw)
         self.deps = deps
 
@@ -85,9 +89,8 @@ class _MinibatchEval(WorkerStage[Proposal, Proposal]):
     def demand(self, item: WorkItem[Proposal]) -> dict[str, float]:
         p = item.payload
         _cached, todo = _misses(self.deps, self.candidate(p), p.minibatch_ids, self.split)
-        p.pending_ids = todo
-        n = len(todo)
-        return {"evaluator": n, "evals": n}
+        p.pending_ids = todo  # decided here, on the engine thread, where the cache may be read
+        return dict(self._demand)
 
     def run(self, item: WorkItem[Proposal]) -> list[WorkItem[Proposal]]:
         p = item.payload
@@ -155,6 +158,8 @@ class Validate(WorkerStage[Proposal, Proposal]):
     in_type = out_type = Proposal
 
     def __init__(self, deps: Deps, **kw: Any):
+        n = len(deps.valset)  # nominal cost: the whole valset; cache hits come back as unused at completion
+        kw.setdefault("demand", {"evaluator": n, "evals": n})
         super().__init__("validate", bandwidth="evaluator", **kw)
         self.deps = deps
 
@@ -163,8 +168,7 @@ class Validate(WorkerStage[Proposal, Proposal]):
         assert p.child is not None
         p.val_ids = list(self.deps.valset.all_ids())
         p.val_cached, p.val_todo = _misses(self.deps, p.child, p.val_ids, VALSET_CACHE_SPLIT)
-        n = len(p.val_todo)
-        return {"evaluator": n, "evals": n}
+        return dict(self._demand)
 
     def run(self, item: WorkItem[Proposal]) -> list[WorkItem[Proposal]]:
         p = item.payload
