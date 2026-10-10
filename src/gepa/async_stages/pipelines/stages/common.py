@@ -83,6 +83,8 @@ class Deps:
     sequential_evals: bool = False
     lm_cost_source: Any = None  # object with total_cost, for adapter_cost
     cache_evaluation: bool = True
+    objective: str = ""
+    background: str = ""
 
     def to_server_candidate(self, candidate: dict[str, str]) -> Any:
         """A candidate as the eval server expects it: the bare text in str-candidate mode."""

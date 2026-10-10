@@ -139,6 +139,8 @@ class AsyncBackend:
             sequential_evals=self.sequential_evals,
             lm_cost_source=cost_source,
             cache_evaluation=self.cache_evaluation,
+            objective=task.objective or "",
+            background=task.background or "",
         )
 
         # Resources: flat pools; evals and evaluator caps come from the server.

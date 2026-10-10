@@ -108,3 +108,65 @@ def test_unknown_engine_config_key_fails_fast():
 
     with pytest.raises(TypeError, match="unknown engine_config keys"):
         AsyncBackend(OptimizeAnythingConfig(engine="async", max_evals=4, engine_config={"budgets": {}}))
+
+
+class _SlotLM:
+    """Answers a reflect prompt with S slots and a generate prompt with a fenced text; counts both."""
+
+    def __init__(self, slots: int = 3):
+        self.slots = slots
+        self.reflects = 0
+        self.generates = 0
+        self.total_cost = 0.0
+
+    def __call__(self, prompt, *args, **kwargs):
+        self.total_cost += 0.001
+        if "Strategy to implement" in prompt:
+            self.generates += 1
+            return f"```\nimproved candidate v{self.generates}\n```"
+        self.reflects += 1
+        blocks = [
+            f"### Slot {k}\nParent: 1\nComponent: current_candidate\nBrief: strategy {k} for reflection {self.reflects}"
+            for k in range(1, self.slots + 1)
+        ]
+        return "\n\n".join(blocks)
+
+
+def test_sibling_proposals_fans_out_one_generator_per_slot(tmp_path):
+    from gepa.optimize_anything import optimize_anything
+
+    calls: list = []
+    lm = _SlotLM(slots=3)
+    data = [f"ex{i}" for i in range(4)]
+    result = optimize_anything(
+        seed_candidate="seed",
+        evaluator=_evaluator_factory(calls),
+        dataset=data,
+        valset=data,
+        objective="make it longer",
+        config=OptimizeAnythingConfig(
+            engine="async",
+            max_evals=60,
+            max_concurrency=4,
+            run_dir=str(tmp_path / "run"),
+            engine_config={
+                "pipeline": "sibling_proposals",
+                "reflection_lm": lm,
+                "resources": {"reflection_lm": {"cap": 3}, "proposals_in_flight": {"cap": 1}},
+                "stages": {
+                    "sample": {"parents": 1, "minibatches": 2, "minibatch_size": 2},
+                    "reflect": {"slots": 3},
+                    "generate": {"workers": 3},
+                    "screen": {"workers": 3},
+                    "validate": {"workers": 2, "select": "score"},
+                },
+                "write_event_log": False,
+            },
+        ),
+    )
+    assert lm.reflects >= 1
+    assert lm.generates == 3 * lm.reflects  # one writer per slot, every reflection
+    assert len(calls) <= 60
+    assert len(result.candidates) >= 2
+    stats = result.metadata["async"]
+    assert stats["stages"]["generate"]["completed"] == lm.generates
