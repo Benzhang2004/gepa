@@ -8,8 +8,9 @@ Only the engine calls a resource. A stage says what it needs per item (its ``dem
 as a budget (drained: the stage reports what it used) or a bandwidth (refilled: nothing is reported used) is
 therefore decided by the stages, not by the pool.
 
-``take`` answers ``False`` for "not now" and raises :class:`ResourceExhaustedError` for "never again": the pool is the
-one that knows which, since it sees whether anything of it is still out and could come back.
+``take`` returns what it took (the whole demand, or the whole pool for a demand above its cap, which the holder
+then serializes inside), ``0`` for "not now", and raises :class:`ResourceExhaustedError` for "never again": the pool
+is the one that knows which, since it sees whether anything of it is still out and could come back.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ class Resource(Protocol):
     @property
     def available(self) -> float | None: ...  # None = unlimited
 
-    def take(self, units: float) -> bool: ...
+    def take(self, units: float) -> float: ...  # units taken; 0 = not now
 
     def put(self, units: float, used: float = 0.0) -> None: ...
 
@@ -71,23 +72,22 @@ class Pool:
         self._available = min(float(self.cap), self._available + (now - self._last_refill) * self.rate)
         self._last_refill = now
 
-    def take(self, units: float) -> bool:
+    def take(self, units: float) -> float:
         if units <= 0:
-            return True
+            return 0.0
         if self.cap is None:
             self._in_flight += units
-            return True
+            return units
         with self._lock:
             self._refill()
-            if units > self.cap:
-                raise ResourceExhaustedError(f"{self.name}: {units} {self.unit}s asked, cap is {self.cap}")
-            if units <= self._available:
-                self._available -= units
-                self._in_flight += units
-                return True
+            need = min(units, float(self.cap))  # a demand above the cap takes the whole pool
+            if need <= self._available:
+                self._available -= need
+                self._in_flight += need
+                return need
             if self.rate is None and self._in_flight == 0 and self._available == 0:
                 raise ResourceExhaustedError(f"{self.name}: nothing left and nothing in flight")
-            return False
+            return 0.0
 
     def put(self, units: float, used: float = 0.0) -> None:
         with self._lock:
@@ -141,22 +141,22 @@ class Evals(Pool):
             return self.tracker.remaining
         return super().available
 
-    def take(self, units: float) -> bool:
+    def take(self, units: float) -> float:
         if self.mode == "bulk":
             return super().take(units)
         from gepa.oa.budget import BudgetExhausted
 
         if units <= 0:
-            return True
+            return 0.0
         try:
             self.tracker.reserve(int(units))
         except BudgetExhausted:
             remaining = self.tracker.remaining
             if remaining == 0 and self._in_flight == 0:
                 raise ResourceExhaustedError("evals: the eval budget is spent") from None
-            return False
+            return 0.0
         self._in_flight += units
-        return True
+        return units
 
     def put(self, units: float, used: float = 0.0) -> None:
         self._used += used

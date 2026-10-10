@@ -11,7 +11,7 @@ from typing import Any
 
 from gepa.async_stages.pipelines.stages.common import Deps, Proposal
 from gepa.async_stages.stage import HeadStage, WorkerStage, WorkItem, by_key
-from gepa.core.state import VALSET_CACHE_SPLIT, initialize_gepa_state, new_iteration_id
+from gepa.core.state import VALSET_CACHE_SPLIT, EvaluationCache, initialize_gepa_state, new_iteration_id
 from gepa.proposer.base import CandidateProposal, SubsampleEvaluation
 from gepa.proposer.reflective_mutation.base import CandidateSelector, ReflectionComponentSelector
 from gepa.strategies.acceptance import AcceptanceCriterion, ImprovementOrEqualAcceptance, StrictImprovementAcceptance
@@ -261,6 +261,7 @@ class Commit(HeadStage[Proposal, Proposal]):
                 seed_valset_evaluation=p.valset_evaluation,
                 track_best_outputs=deps.track_best_outputs,
                 frontier_type=deps.frontier_type,  # type: ignore[arg-type]
+                evaluation_cache=EvaluationCache() if deps.cache_evaluation else None,
             )
             if state.evaluation_cache is not None:
                 ids = list(p.valset_evaluation.scores_by_val_id)

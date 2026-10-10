@@ -9,7 +9,8 @@
   ``rate`` (units per second); any further name is a user resource.
 - ``stages``: one entry per stage of the pipeline: the engine's scheduling keys (``workers``, ``max_workers``,
   ``max_queue``, ``select``, ``demand``, ``hold``) and the stage's own constructor options.
-- ``reflection_lm``: a model name or a callable; ``seed``; ``write_event_log``; ``isolate_errors``.
+- ``reflection_lm``: a model name or a callable; ``seed``; ``write_event_log``; ``isolate_errors``;
+  ``cache_evaluation`` (default True: a GEPAState evaluation cache, so demands are cache misses).
 """
 
 from __future__ import annotations
@@ -24,7 +25,6 @@ from gepa.async_stages.engine import Engine
 from gepa.async_stages.pipelines import resolve
 from gepa.async_stages.pipelines.stages import Deps, Proposal, StateBox
 from gepa.async_stages.resources import Evals, Pool
-from gepa.async_stages.stage import WorkItem
 from gepa.oa.engine import Result
 
 if TYPE_CHECKING:
@@ -53,6 +53,7 @@ class AsyncBackend:
         self.isolate_errors = bool(cfg.pop("isolate_errors", False))
         self.sequential_evals = bool(cfg.pop("sequential_evals", False))
         self.frontier_type = cfg.pop("frontier_type", "hybrid")
+        self.cache_evaluation = bool(cfg.pop("cache_evaluation", True))
         if cfg:
             raise TypeError(f"unknown engine_config keys for the async backend: {sorted(cfg)}")
 
@@ -62,7 +63,7 @@ class AsyncBackend:
         from gepa.adapters.optimize_anything_adapter.optimize_anything_adapter import OptimizeAnythingAdapter
         from gepa.core.data_loader import ensure_loader
         from gepa.core.result import GEPAResult
-        from gepa.gepa_launcher import _build_reflection_prompt_template
+        from gepa.gepa_launcher import _build_reflection_prompt_template, optimize_anything_reflection_prompt_template
         from gepa.logging.logger import Logger, StdOutLogger
         from gepa.proposer.reflective_mutation.reflection_lm import StatelessReflectionLM
 
@@ -98,7 +99,11 @@ class AsyncBackend:
         elif self.reflection_lm is not None:
             lm_callable = self.reflection_lm
             cost_source = self.reflection_lm if hasattr(self.reflection_lm, "total_cost") else None
-        template = _build_reflection_prompt_template(task.objective or None, task.background or None)
+        # Same rule as the launcher: objective/background build a template; neither means the default one.
+        if task.objective or task.background:
+            template: str = _build_reflection_prompt_template(task.objective or None, task.background or None)
+        else:
+            template = optimize_anything_reflection_prompt_template
         reflection_lm = StatelessReflectionLM(lm_callable, template, logger) if lm_callable is not None else None
 
         def evaluator(candidate: Any, example: Any = None, **kw: Any) -> tuple[float, Any, dict[str, Any]]:
@@ -133,6 +138,7 @@ class AsyncBackend:
             isolate_errors=self.isolate_errors,
             sequential_evals=self.sequential_evals,
             lm_cost_source=cost_source,
+            cache_evaluation=self.cache_evaluation,
         )
 
         # Resources: flat pools; evals and evaluator caps come from the server.
@@ -208,4 +214,4 @@ class AsyncBackend:
         return
 
 
-__all__ = ["AsyncBackend", "WorkItem"]
+__all__ = ["AsyncBackend"]

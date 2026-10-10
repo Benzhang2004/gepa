@@ -280,20 +280,20 @@ class Engine:
             if resource is None:
                 raise RuntimeError(f"stage {stage.name!r} demands unknown resource {name!r}")
             try:
-                ok = resource.take(need)
+                got = resource.take(need)
             except ResourceExhaustedError as e:
                 self._rollback(taken, item)
                 self.events.resource(name).refused += 1
                 self._end_item_at(stage, item, "budget", reason=str(e))
                 self._begin_stop("exhausted")
                 return None
-            if not ok:
+            if got <= 0:
                 self._rollback(taken, item)
                 self.events.resource(name).refused += 1
                 return None
-            taken[name] = need
-            self.events.resource(name).taken += need
-            self._in_flight_units[name] = self._in_flight_units.get(name, 0.0) + need
+            taken[name] = got
+            self.events.resource(name).taken += got
+            self._in_flight_units[name] = self._in_flight_units.get(name, 0.0) + got
         return taken
 
     def _rollback(self, taken: Mapping[str, float], item: WorkItem[Any]) -> None:

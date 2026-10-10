@@ -243,16 +243,15 @@ def test_pipeline_validation():
 
 def test_pool_exhaustion_semantics():
     pool = Pool("p", 3)
-    assert pool.take(2)
-    assert not pool.take(2)  # not now: two are out and may come back
+    assert pool.take(2) == 2
+    assert pool.take(2) == 0  # not now: two are out and may come back
     pool.put(2)
-    assert pool.take(3)
+    assert pool.take(3) == 3
     pool.put(0, used=3)  # all consumed
     with pytest.raises(ResourceExhaustedError):
         pool.take(1)
-    with pytest.raises(ResourceExhaustedError):
-        Pool("q", 2).take(5)  # larger than the cap can ever be
+    assert Pool("q", 2).take(5) == 2  # a demand above the cap takes the whole pool
     clock = Pool("c", 2, rate=1000.0)
-    assert clock.take(2)
+    assert clock.take(2) == 2
     time.sleep(0.01)
-    assert clock.take(1)  # refilled from the clock, never exhausted
+    assert clock.take(1) == 1  # refilled from the clock, never exhausted
