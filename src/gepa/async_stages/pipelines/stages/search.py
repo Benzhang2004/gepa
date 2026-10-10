@@ -126,13 +126,13 @@ class Propose(WorkerStage[Proposal, Proposal]):
         proposal, _next = lm.reflect(p.parent, dataset, p.components)
         new_texts = dict(proposal.new_texts or {})
         p.proposal_meta = {"prompts": dict(proposal.prompts), "raw_lm_outputs": dict(proposal.raw_lm_outputs)}
+        item.usage = {"usd": self._usd_estimate}  # the call was made whether or not it proposed anything
         if not new_texts or all(p.parent.get(k) == v for k, v in new_texts.items()):
             item.tag = "no_proposal"
             return [item]
         child = dict(p.parent)
         child.update(new_texts)
         p.child = child
-        item.usage = {"usd": self._usd_estimate}
         return [item]
 
     def after(self, item: WorkItem[Proposal]) -> None:
@@ -259,7 +259,7 @@ class Commit(HeadStage[Proposal, Proposal]):
                 seed_candidate=p.child,
                 seed_valset_evaluation=p.valset_evaluation,
                 track_best_outputs=deps.track_best_outputs,
-                frontier_type=deps.frontier_type,  # type: ignore[arg-type]
+                frontier_type=self.frontier_type,  # type: ignore[arg-type]
                 evaluation_cache=EvaluationCache() if deps.cache_evaluation else None,
             )
             if state.evaluation_cache is not None:

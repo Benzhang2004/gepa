@@ -16,9 +16,7 @@ The engine knows nothing about candidates, lineage or data. It reads three field
 from __future__ import annotations
 
 import queue
-import threading
 import time
-import traceback
 from collections import Counter
 from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -51,7 +49,7 @@ class Engine:
     """Drives a pipeline. ``resources`` are the pools stages may name in their demand.
 
     ``executors`` maps a bandwidth name to a thread-pool size; a worker stage submits to the pool of its
-    bandwidth. ``stage_overrides`` carries per-stage scheduling keys from config (``workers``, ``max_queue``).
+    bandwidth. ``gap_watch`` names the stage whose completions the gap histograms count against.
     """
 
     def __init__(
@@ -92,7 +90,6 @@ class Engine:
         self._stop_reason: str | None = None
         self._fatal: BaseException | None = None
         self._in_flight_units: dict[str, float] = dict.fromkeys(self.resources, 0.0)
-        self._lock = threading.Lock()
 
     # ------------------------------------------------------------------ public
 
@@ -124,13 +121,9 @@ class Engine:
                 self.events.tick(dict(self.inflight), dict(self._in_flight_units))
                 busy = any(self.inflight.values())
                 if not busy and not fired:
-                    if self._stopping:
-                        break
-                    if not self._anything_waiting():
+                    # Nothing runs and nothing can fire: the drain is over, or (items waiting) a wiring error.
+                    if not self._stopping:
                         self._begin_stop("quiescent")
-                        break
-                    # Items wait but nothing can fire: either a pool is drained (handled at take) or wiring.
-                    self._begin_stop("quiescent")
                     break
                 if not fired and busy:
                     self._wait_for_completion()
@@ -237,6 +230,7 @@ class Engine:
             return False
         if index is not None:
             del place[index]
+        item.usage = {}  # what this body reports used; a body that raises before annotating is charged nothing
         if stage.mode == "consume":
             item.wait_seconds[stage.name] = item.wait_seconds.get(stage.name, 0.0) + (
                 time.monotonic() - item.enqueued_at
@@ -499,7 +493,3 @@ class Engine:
         for name, r in self.resources.items():
             lines.append(f"{name}: available {r.available}, in flight {self._in_flight_units.get(name, 0.0)}")
         return "\n".join(lines)
-
-
-def format_exception(err: BaseException) -> str:
-    return "".join(traceback.format_exception(type(err), err, err.__traceback__))
