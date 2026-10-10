@@ -27,7 +27,7 @@ from typing import Any
 
 from gepa.async_stages.events import EventLog
 from gepa.async_stages.pipeline import Pipeline
-from gepa.async_stages.resources import Resource, ResourceExhaustedError
+from gepa.async_stages.resources import ResourceExhaustedError, Upstream
 from gepa.async_stages.stage import Stage, WorkerStage, WorkItem
 
 
@@ -57,8 +57,9 @@ class Engine:
     def __init__(
         self,
         pipeline: Pipeline,
-        resources: Mapping[str, Resource],
+        caps: Mapping[str, float | None],
         *,
+        upstreams: Mapping[str, Upstream] | None = None,
         executors: Mapping[str, int],
         run_dir: str | None = None,
         write_event_log: bool = True,
@@ -71,7 +72,13 @@ class Engine:
         #: When set, every fire records how many completions of this stage happened since the item was created
         #: (its distribution per stage is ``stats["gaps"]``; "commit" in the shipped pipelines).
         self.gap_watch = gap_watch
-        self.resources = dict(resources)
+        #: The resources: a cap per name (None = unbounded), booked by the engine itself. An upstream, when a
+        #: resource has one, leases the cap at open or is asked per take (see ``resources.Upstream``).
+        self.caps: dict[str, float | None] = dict(caps)
+        self.upstreams: dict[str, Upstream] = dict(upstreams or {})
+        for name in self.upstreams:
+            self.caps.setdefault(name, None)
+        self._available: dict[str, float | None] = {n: (None if c is None else float(c)) for n, c in self.caps.items()}
         self.run_dir = run_dir
         self.poll_interval = poll_interval_seconds
         self.raise_on_exception = raise_on_exception
@@ -91,7 +98,7 @@ class Engine:
         self._stopping = False
         self._stop_reason: str | None = None
         self._fatal: BaseException | None = None
-        self._in_flight_units: dict[str, float] = dict.fromkeys(self.resources, 0.0)
+        self._in_flight_units: dict[str, float] = dict.fromkeys(self.caps, 0.0)
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------ public
@@ -110,9 +117,12 @@ class Engine:
 
     def run(self) -> dict[str, Any]:
         self.pipeline.validate()
-        for resource in self.resources.values():
-            resource.open()
-        self.events.emit("run_start", stages=list(self.pipeline.stages), resources=list(self.resources))
+        for name, upstream in self.upstreams.items():
+            lease = upstream.open()
+            if lease is not None:
+                self.caps[name] = lease
+                self._available[name] = float(lease)
+        self.events.emit("run_start", stages=list(self.pipeline.stages), resources=list(self.caps))
         try:
             while True:
                 self._drain_completions()
@@ -145,8 +155,8 @@ class Engine:
                 for leftover in list(self.places[name]):
                     self._end_item(leftover, "unfinished")
                 self.places[name].clear()
-            for resource in self.resources.values():
-                resource.close()
+            for name, upstream in self.upstreams.items():
+                upstream.close(self.events.resource(name).used)
             self.events.stop_reason = self._stop_reason
             self.stats = self.events.summary()
             self.stats["counters"] = dict(self.counters)
@@ -289,11 +299,10 @@ class Engine:
             if need <= 0:
                 taken[name] = 0.0
                 continue
-            resource = self.resources.get(name)
-            if resource is None:
+            if name not in self.caps:
                 raise RuntimeError(f"stage {stage.name!r} demands unknown resource {name!r}")
             try:
-                got = resource.take(need)
+                got = self._take_units(name, need)
             except ResourceExhaustedError as e:
                 self._rollback(taken, item)
                 self.events.resource(name).refused += 1
@@ -312,7 +321,34 @@ class Engine:
     def _rollback(self, taken: Mapping[str, float], item: WorkItem[Any]) -> None:
         for name, units in taken.items():
             if units > 0:
-                self.resources[name].put(units)  # never counted as taken or in flight: the demand was not met whole
+                self._put_units(name, units, 0.0)  # never counted as taken or in flight: the demand was not met whole
+
+    def _take_units(self, name: str, units: float) -> float:
+        """Units taken from one resource: the whole demand, or the whole cap for a demand above it (the holder
+        serializes inside); ``0`` = not now; raises ``ResourceExhaustedError`` when the demand can never be met,
+        which is when it cannot be met now and nothing is in flight that could come back."""
+        cap = self.caps[name]
+        if cap is None:
+            upstream = self.upstreams.get(name)
+            return upstream.take(units) if upstream is not None else units
+        available = self._available[name] or 0.0
+        want = min(units, cap)
+        if want <= available:
+            self._available[name] = available - want
+            return want
+        if self._in_flight_units.get(name, 0.0) <= 0:
+            raise ResourceExhaustedError(f"{name}: {want} asked, {available} left and nothing in flight")
+        return 0.0
+
+    def _put_units(self, name: str, units: float, used: float) -> None:
+        """``units`` come back to the resource; ``used`` were spent and stay out."""
+        cap = self.caps[name]
+        if cap is None:
+            upstream = self.upstreams.get(name)
+            if upstream is not None:
+                upstream.put(units, used)
+            return
+        self._available[name] = min(cap, (self._available[name] or 0.0) + units)
 
     # ------------------------------------------------------------------ completion and routing
 
@@ -410,7 +446,7 @@ class Engine:
                 continue
             u = float(used.get(name, 0.0))
             back = max(0.0, units - u)
-            self.resources[name].put(back, used=min(u, units))
+            self._put_units(name, back, min(u, units))
             self.events.resource(name).put_back += back
             self.events.resource(name).used += min(u, units)
             self._in_flight_units[name] -= units
@@ -471,7 +507,7 @@ class Engine:
 
     def _end_item(self, item: WorkItem[Any], outcome: str, log: bool = True, **fields: Any) -> None:
         for name, units in list(item.held.items()):
-            self.resources[name].put(units)
+            self._put_units(name, units, 0.0)
             self.events.resource(name).put_back += units
             self._held_units(name, -units)
         item.held = {}
@@ -496,9 +532,17 @@ class Engine:
         lines = []
         for name, stage in self.pipeline.stages.items():
             lines.append(f"{name}: {len(self.places[name])} waiting, {self.inflight[name]} in flight / {stage.workers}")
-        for name, r in self.resources.items():
-            lines.append(f"{name}: available {r.available}, in flight {self._in_flight_units.get(name, 0.0)}")
+        for name in self.caps:
+            lines.append(f"{name}: available {self.available(name)}, in flight {self.in_flight(name)}")
         return "\n".join(lines)
+
+    def available(self, name: str) -> float | None:
+        """Units of a resource not taken right now; ``None`` for an unbounded one."""
+        return self._available[name]
+
+    def in_flight(self, name: str) -> float:
+        """Units of a resource taken and neither put back nor reported used, held units included."""
+        return self._in_flight_units.get(name, 0.0)
 
 
 def format_exception(err: BaseException) -> str:

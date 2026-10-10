@@ -21,7 +21,6 @@ from gepa.async_stages import (
     HeadStage,
     Pipeline,
     PipelineError,
-    Pool,
     ResourceExhaustedError,
     WorkerStage,
     WorkItem,
@@ -124,11 +123,7 @@ def build(*, evals: int, evaluator: int, in_flight: int = 2, accept_if=lambda t:
     gate = Gate(accept_if)
     commit = Commit(stop_at=stop_at, engine_ref=ref)
     pipeline = Pipeline().chain(source, evaluate, gate).edge(gate, commit, "accepted").edge(commit, source)
-    resources = {
-        "evals": Pool("evals", evals, unit="evaluation"),
-        "evaluator": Pool("evaluator", evaluator),
-        "in_flight": Pool("in_flight", in_flight),
-    }
+    resources = {"evals": evals, "evaluator": evaluator, "in_flight": in_flight}
     engine = Engine(pipeline, resources, executors={"evaluator": evaluator}, write_event_log=False)
     ref["engine"] = engine
     seed = engine.inject("source", Toy(parent=0, value=0.0, score=0.0))
@@ -138,9 +133,8 @@ def build(*, evals: int, evaluator: int, in_flight: int = 2, accept_if=lambda t:
 
 def assert_settled(engine: Engine, resources: dict):
     """Every unit taken was put back or reported used; nothing is left in flight or held."""
-    for name, pool in resources.items():
-        assert pool.in_flight == 0, f"{name}: {pool.in_flight} units still in flight"
-        assert engine._in_flight_units.get(name, 0.0) == pytest.approx(0.0), name
+    for name in resources:
+        assert engine.in_flight(name) == pytest.approx(0.0), f"{name}: {engine.in_flight(name)} units still in flight"
     assert all(n == 0 for n in engine.inflight.values())
     for name, stage in engine.pipeline.stages.items():
         if stage.mode == "consume":
@@ -153,11 +147,11 @@ def test_budget_drains_then_the_run_stops_exhausted():
     assert stats["stop_reason"] == "exhausted"
     assert evaluate.calls == 10  # five evaluations of two, the budget exactly
     assert commit.commits == 5
-    assert resources["evals"].available == 0
+    assert engine.available("evals") == 0
     assert_settled(engine, resources)
     # The refused item ended with outcome budget and its held unit came back.
     assert stats["outcomes"].get("budget", 0) >= 1
-    assert resources["in_flight"].available == 2
+    assert engine.available("in_flight") == 2
 
 
 def test_bandwidth_at_its_cap_is_not_exhaustion():
@@ -212,7 +206,7 @@ def test_worker_error_is_isolated_when_not_raising():
     gate = Gate(lambda t: True)
     commit = Commit()
     pipeline = Pipeline().chain(source, evaluate, gate).edge(gate, commit, "accepted").edge(commit, source)
-    resources = {"evals": Pool("evals", 12), "evaluator": Pool("evaluator", 4), "in_flight": Pool("in_flight", 2)}
+    resources = {"evals": 12, "evaluator": 4, "in_flight": 2}
     engine = Engine(pipeline, resources, executors={"evaluator": 4}, write_event_log=False, raise_on_exception=False)
     engine.inject("source", Toy(parent=0, value=0.0, score=0.0))
     stats = engine.run()
@@ -241,20 +235,51 @@ def test_pipeline_validation():
         p.validate(stage_names_in_config=["zzz"])
 
 
-def test_pool_exhaustion_semantics():
-    pool = Pool("p", 3)
-    assert pool.take(2) == 2
-    assert pool.take(2) == 0  # not now: two are out and may come back
-    pool.put(2)
-    assert pool.take(3) == 3
-    pool.put(0, used=3)  # all consumed
+def test_cap_semantics():
+    """The engine books caps itself: not now while units are out, never once nothing can come back, the whole cap
+    for a demand above it, and an upstream asked per take when it leases nothing."""
+    engine = Engine(Pipeline(), {"p": 3, "q": 2}, executors={}, write_event_log=False)
+
+    def take(name, units):  # what _take does around _take_units: book what was taken as in flight
+        got = engine._take_units(name, units)
+        engine._in_flight_units[name] += got
+        return got
+
+    def put(name, units, used):
+        engine._put_units(name, units, used)
+        engine._in_flight_units[name] -= units + used
+
+    assert take("p", 2) == 2
+    assert take("p", 2) == 0  # not now: two are out and may come back
+    put("p", 2, 0.0)
+    assert take("p", 3) == 3
+    put("p", 0, 3.0)  # all consumed
     with pytest.raises(ResourceExhaustedError):
-        pool.take(1)
-    assert Pool("q", 2).take(5) == 2  # a demand above the cap takes the whole pool
-    clock = Pool("c", 2, rate=1000.0)
-    assert clock.take(2) == 2
-    time.sleep(0.01)
-    assert clock.take(1) == 1  # refilled from the clock, never exhausted
+        take("p", 1)
+    assert take("q", 5) == 2  # a demand above the cap takes the whole cap
+
+    class Quota:
+        def __init__(self):
+            self.granted = 0.0
+
+        def open(self):
+            return None
+
+        def take(self, units):
+            self.granted += units
+            return units
+
+        def put(self, units, used):
+            self.granted -= units
+
+        def close(self, used):
+            pass
+
+    quota = Quota()
+    engine = Engine(Pipeline(), {}, upstreams={"calls": quota}, executors={}, write_event_log=False)
+    assert engine._take_units("calls", 4) == 4 and quota.granted == 4
+    engine._put_units("calls", 1, 3.0)
+    assert quota.granted == 3
 
 
 def test_fatal_error_settles_work_still_in_flight():
