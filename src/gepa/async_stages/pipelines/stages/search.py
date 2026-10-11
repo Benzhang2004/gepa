@@ -94,6 +94,8 @@ class Propose(WorkerStage[Proposal, Proposal]):
         usd_first_guess: float = 0.01,
         **kw: Any,
     ):
+        # Nominal cost: one call and the running-mean USD estimate (re-fitted in ``after``), declared up front.
+        kw.setdefault("demand", {"reflection_lm": 1, "usd": usd_first_guess})
         super().__init__("propose", bandwidth="reflection_lm", **kw)
         self.deps = deps
         if isinstance(module_selector, str):
@@ -104,7 +106,6 @@ class Propose(WorkerStage[Proposal, Proposal]):
             self.module_selector: ReflectionComponentSelector = table[module_selector]()
         else:
             self.module_selector = module_selector
-        self._usd_estimate = usd_first_guess
 
     def demand(self, item: WorkItem[Proposal]) -> dict[str, float]:
         p = item.payload
@@ -113,7 +114,7 @@ class Propose(WorkerStage[Proposal, Proposal]):
             p.components = self.module_selector(
                 self.deps.box.get(), p.parent_eval.trajectories, p.parent_eval.scores, p.parent_idx, p.parent
             )
-        return {"reflection_lm": 1, "usd": self._usd_estimate}
+        return dict(self._demand)
 
     def run(self, item: WorkItem[Proposal]) -> list[WorkItem[Proposal]]:
         p = item.payload
@@ -126,7 +127,7 @@ class Propose(WorkerStage[Proposal, Proposal]):
         proposal, _next = lm.reflect(p.parent, dataset, p.components)
         new_texts = dict(proposal.new_texts or {})
         p.proposal_meta = {"prompts": dict(proposal.prompts), "raw_lm_outputs": dict(proposal.raw_lm_outputs)}
-        item.usage = {"usd": self._usd_estimate}  # the call was made whether or not it proposed anything
+        item.usage = {"usd": self._demand["usd"]}  # the call was made whether or not it proposed anything
         if not new_texts or all(p.parent.get(k) == v for k, v in new_texts.items()):
             item.tag = "no_proposal"
             return [item]
@@ -142,7 +143,7 @@ class Propose(WorkerStage[Proposal, Proposal]):
         if isinstance(total, int | float):
             self.deps.lm_calls["n"] += 1
             if total > 0:
-                self._usd_estimate = total / self.deps.lm_calls["n"]
+                self._demand["usd"] = total / self.deps.lm_calls["n"]
 
 
 class StalenessGuard(HeadStage[Proposal, Proposal]):

@@ -105,7 +105,7 @@ if (typeof document !== "undefined") (function () {
   const $ = id => document.getElementById(id);
   const PALETTE = ["#2f6fed", "#e0792b", "#2a9d6f", "#c43d6b", "#7b5bd6", "#b58a1e", "#1f9fb8", "#8b6a4a", "#d14a2a", "#4f7a28", "#5c6bc0", "#00897b"];
   const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
-  const fmt = (v, d = 1) => v == null ? "–" : (Math.abs(v) >= 1000 ? Math.round(v).toLocaleString() : Number(v).toFixed(Number.isInteger(v) ? 0 : d));
+  const fmt = (v, d = 1) => v == null ? "–" : Math.abs(v) >= 1000 ? Math.round(v).toLocaleString() : Number.isInteger(v) ? String(v) : Math.abs(v) < 1 ? Number(v).toPrecision(2) : Number(v).toFixed(d);
   const fmtMin = s => (s / 60).toFixed(1) + " min";
 
   let mode = "live", replay = null, timer = null, playing = null;
@@ -199,6 +199,7 @@ if (typeof document !== "undefined") (function () {
         svg += `<rect x="${p.x - bw / 2}" y="${p.y - 2}" width="${bw}" height="7" class="usedbar"/><rect x="${p.x - bw / 2}" y="${p.y - 2}" width="${bw * fr}" height="7" class="leftbar"/>`;
         svg += `<text x="${p.x}" y="${p.y + 20}" text-anchor="middle" class="tm">${fmt(left)} left of ${fmt(cap)}</text>`;
       } else if (left != null) svg += `<text x="${p.x}" y="${p.y + 12}" text-anchor="middle" class="tm">${fmt(left)} left</text>`;
+      else if (v.used != null && v.used > 0) svg += `<text x="${p.x}" y="${p.y + 8}" text-anchor="middle" class="tm">${fmt(v.used)} spent, no cap</text><text x="${p.x}" y="${p.y + 22}" text-anchor="middle" class="tm">${fmt(v.in_flight)} in flight</text>`;
       else svg += `<text x="${p.x}" y="${p.y + 12}" text-anchor="middle" class="tm">${fmt(v.in_flight)} in flight</text>`;
     }
     svg += "</svg>";
