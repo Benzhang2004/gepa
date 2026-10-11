@@ -115,92 +115,89 @@ if (typeof document !== "undefined") (function () {
   // ---------------------------------------------------------------- figure
   function renderFigure(snap) {
     const topo = snap.topology, order = topo.stages.map(s => s.name), n = order.length;
-    const top = Math.ceil(n / 2), colW = 160, PW = 24, BW = 96, H = 44;
-    const W = Math.max(900, 120 + Math.max(top, n - top) * colW + 80);
-    const yTop = 78, yRes = 215, yBot = 356, FH = 420;
-    const colX = i => 110 + i * colW; // left edge of the place box for column i
-    const pos = {}; // stage -> {x (place left), y, row}
-    order.forEach((s, i) => { if (i < top) pos[s] = { x: colX(i), y: yTop, row: "top", col: i }; else { const j = i - top; pos[s] = { x: colX(top - 1 - j) , y: yBot, row: "bot", col: top - 1 - j }; } });
-    const center = s => ({ x: pos[s].x + PW + BW / 2, y: pos[s].y + H / 2 });
+    const top = Math.ceil(n / 2), colW = 236, PW = 26, BW = 128, H = 60, GAP = colW - PW - BW;
+    const W = 120 + Math.max(top, n - top) * colW + 70;
+    const yTop = 92, yRes = 262, yBot = 432, FH = 530;
+    const colX = i => 110 + i * colW;
+    const pos = {};
+    order.forEach((s, i) => { if (i < top) pos[s] = { x: colX(i), y: yTop, row: "top" }; else { const j = i - top; pos[s] = { x: colX(top - 1 - j), y: yBot, row: "bot" }; } });
+    const bodyMid = s => pos[s].x + PW + BW / 2;
     let svg = `<svg viewBox="0 0 ${W} ${FH}" width="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Pipeline figure">`;
     svg += `<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>`;
     // resources band
-    const resNames = Object.keys(topo.resources); const rW = Math.min(170, (W - 160) / Math.max(1, resNames.length));
-    const resPos = {};
-    resNames.forEach((r, i) => { resPos[r] = { x: 80 + rW / 2 + i * rW, y: yRes }; });
-    svg += `<rect x="60" y="${yRes - 42}" width="${W - 120}" height="84" rx="8" fill="none" stroke="var(--line)" stroke-dasharray="5 4"/>`;
-    svg += `<text x="${W - 70}" y="${yRes + 36}" text-anchor="end" class="ts">engine resources</text>`;
-    // demand lines (behind everything)
-    for (const st of topo.stages) for (const r of Object.keys(st.demand || {})) {
-      if (!resPos[r]) continue; const c = center(st.name), p = resPos[r];
-      svg += `<line x1="${c.x}" y1="${pos[st.name].row === "top" ? pos[st.name].y + H : pos[st.name].y}" x2="${p.x}" y2="${p.y + (pos[st.name].row === "top" ? -24 : 24)}" class="demand"/>`;
-    }
+    const resNames = Object.keys(topo.resources);
+    const bandL = 150, bandR = W - 150, rW = Math.min(230, (bandR - bandL - 20) / Math.max(1, resNames.length));
+    const resPos = {}; resNames.forEach((r, i) => { resPos[r] = { x: bandL + 10 + rW / 2 + i * rW, y: yRes }; });
+    svg += `<rect x="${bandL}" y="${yRes - 46}" width="${bandR - bandL}" height="92" rx="8" fill="none" stroke="var(--line)" stroke-dasharray="5 4"/>`;
+    svg += `<text x="${bandL + 10}" y="${yRes - 52}" class="ts">engine resources: what is left of each cap</text>`;
     // edges
     const edgeStats = snap.edges || {};
     const statFor = (src, dst, label) => edgeStats[`${src}->${dst}` + (label ? ":" + label : "")] || Object.values(edgeStats).find(e => e.src === src && e.dst === dst) || { count: 0, per_min: 0 };
     const idx = Object.fromEntries(order.map((s, i) => [s, i]));
+    const lab = (st, e) => `${fmt(st.per_min, 0)}/min · ${st.count}` + (e.label ? ` · ${e.label}` : "");
     for (const e of topo.edges) {
       if (!(e.src in pos) || !(e.dst in pos)) continue;
       const st = statFor(e.src, e.dst, e.label), hot = st.per_min > 0 ? " hot" : "";
-      const lab = `${fmt(st.per_min, 0)}/min · ${st.count}` + (e.label ? ` · ${e.label}` : "");
       const a = pos[e.src], b = pos[e.dst];
-      const ax = a.x + PW + BW, ay = a.y + H / 2, bx = b.x, by = b.y + H / 2;
-      if (idx[e.dst] === idx[e.src] + 1 && a.row === b.row) {
-        if (a.row === "top") svg += `<line x1="${ax}" y1="${ay}" x2="${bx - 2}" y2="${by}" class="edge${hot}" marker-end="url(#ah)"/><text x="${(ax + bx) / 2}" y="${ay - 10}" text-anchor="middle" class="tm">${lab}</text>`;
-        else svg += `<line x1="${a.x}" y1="${ay}" x2="${b.x + PW + BW + 2}" y2="${by}" class="edge${hot}" marker-end="url(#ah)"/><text x="${(a.x + b.x + PW + BW) / 2}" y="${ay + 22}" text-anchor="middle" class="tm">${lab}</text>`;
+      const aR = a.x + PW + BW, ay = a.y + H / 2, by = b.y + H / 2;
+      if (idx[e.dst] === idx[e.src] + 1 && a.row === b.row && a.row === "top") {
+        svg += `<line x1="${aR}" y1="${ay}" x2="${b.x - 2}" y2="${by}" class="edge${hot}" marker-end="url(#ah)"/><text x="${aR + GAP / 2}" y="${ay - 8}" text-anchor="middle" class="tm">${lab(st, e)}</text>`;
+      } else if (idx[e.dst] === idx[e.src] + 1 && a.row === b.row) {
+        const bR = b.x + PW + BW;
+        svg += `<line x1="${a.x}" y1="${ay}" x2="${bR + 2}" y2="${by}" class="edge${hot}" marker-end="url(#ah)"/><text x="${bR + GAP / 2}" y="${ay - 8}" text-anchor="middle" class="tm">${lab(st, e)}</text>`;
       } else if (idx[e.dst] === idx[e.src] + 1) { // top row end -> bottom row start, down the right side
-        const xr = ax + 40;
-        svg += `<path d="M${ax},${ay} H${xr} V${by} H${b.x + PW + BW + 2}" class="edge${hot}" marker-end="url(#ah)"/><text x="${xr + 6}" y="${(ay + by) / 2}" class="tm">${lab}</text>`;
-      } else if (idx[e.dst] <= idx[e.src]) { // a cycle: around the left side
-        const xl = Math.min(a.x, b.x) - 50;
-        svg += `<path d="M${a.x},${ay} H${xl} V${by} H${b.x - 2}" class="edge${hot}" marker-end="url(#ah)"/><text x="${xl - 6}" y="${(ay + by) / 2}" text-anchor="end" class="tm">${lab}</text>`;
-      } else { // a skip forward
-        const lift = a.row === "top" ? -40 : 40;
-        svg += `<path d="M${ax},${ay} C${ax},${ay + lift} ${bx},${by + lift} ${bx - 2},${by}" class="edge${hot}" marker-end="url(#ah)"/><text x="${(ax + bx) / 2}" y="${ay + lift * 0.75}" text-anchor="middle" class="tm">${lab}</text>`;
+        const xr = aR + 34;
+        svg += `<path d="M${aR},${ay} H${xr} V${by} H${b.x + PW + BW + 2}" class="edge${hot}" marker-end="url(#ah)"/><text x="${xr + 8}" y="${(ay + by) / 2 + 4}" class="tm">${lab(st, e)}</text>`;
+      } else if (idx[e.dst] <= idx[e.src]) { // the loop back, around the left side
+        const xl = Math.min(a.x, b.x) - 44;
+        svg += `<path d="M${a.x},${ay} H${xl} V${by} H${b.x - 2}" class="edge${hot}" marker-end="url(#ah)"/><text x="${xl - 8}" y="${(ay + by) / 2 + 4}" text-anchor="end" class="tm">${lab(st, e)}</text>`;
+      } else {
+        const lift = a.row === "top" ? -44 : 44;
+        svg += `<path d="M${aR},${ay} C${aR},${ay + lift} ${b.x},${by + lift} ${b.x - 2},${by}" class="edge${hot}" marker-end="url(#ah)"/><text x="${(aR + b.x) / 2}" y="${ay + lift * 0.8}" text-anchor="middle" class="tm">${lab(st, e)}</text>`;
       }
     }
-    // terminals: where items end
+    // terminals: where items end, above the top row and below the bottom row
     const termsBy = {};
     for (const [k, v] of Object.entries(snap.terminals || {})) { const [s, o] = k.split(":"); (termsBy[s] = termsBy[s] || []).push([o, v]); }
     for (const [s, list] of Object.entries(termsBy)) {
-      if (!(s in pos)) continue; const p = pos[s]; const up = p.row === "top";
+      if (!(s in pos)) continue; const p = pos[s], up = p.row === "top";
       list.sort((x, y) => y[1] - x[1]).forEach(([o, v], k) => {
-        const cx = p.x + PW + BW + 10 + k * 8, cy = up ? p.y - 30 - k * 20 : p.y + H + 30 + k * 20;
-        svg += `<line x1="${p.x + PW + BW - 10}" y1="${up ? p.y : p.y + H}" x2="${cx - 6}" y2="${cy + (up ? 6 : -6)}" class="edge" marker-end="url(#ah)"/>`;
-        svg += `<circle cx="${cx}" cy="${cy}" r="7" class="term"/><text x="${cx + 11}" y="${cy + 4}" class="ts">${o} ${v}</text>`;
+        const cx = p.x + PW + BW - 16, cy = up ? p.y - 42 - k * 22 : p.y + H + 54 + k * 22;
+        svg += `<line x1="${cx}" y1="${up ? p.y : p.y + H}" x2="${cx}" y2="${cy + (up ? 9 : -9)}" class="edge" marker-end="url(#ah)"/>`;
+        svg += `<circle cx="${cx}" cy="${cy}" r="7" class="term"/><text x="${cx + 12}" y="${cy + 4}" class="ts">${o} ${v}</text>`;
       });
     }
-    // stages
+    // stages: place box + body box, demand printed inside the body
     for (const st of topo.stages) {
       const p = pos[st.name], s = snap.stages[st.name] || { waiting: 0, in_flight: 0, workers: st.max_workers, completed: 0 };
       const isPool = st.mode === "read";
       scaleMax[st.name] = Math.max(scaleMax[st.name] || 1, s.waiting, st.max_queue || 0);
       const fillH = Math.min(1, s.waiting / scaleMax[st.name]) * (H - 4);
-      svg += `<g>`;
       svg += `<rect x="${p.x}" y="${p.y}" width="${PW}" height="${H}" class="place" fill="${isPool ? "var(--pool)" : "var(--queue)"}"/>`;
       svg += `<rect x="${p.x + 2}" y="${p.y + H - 2 - fillH}" width="${PW - 4}" height="${fillH}" class="fill"/>`;
       svg += `<text x="${p.x + PW / 2}" y="${p.y + H / 2 + 4}" text-anchor="middle" class="tm">${s.waiting}</text>`;
       const workers = s.workers ?? st.max_workers; const bodyFill = st.kind === "head" ? "var(--head)" : st.kind === "worker" ? "var(--worker)" : "var(--queue)";
       svg += `<rect x="${p.x + PW}" y="${p.y}" width="${BW}" height="${H}" class="body" fill="${bodyFill}"/>`;
-      if (workers) { const bw = Math.min(1, s.in_flight / workers) * (BW - 4); svg += `<rect x="${p.x + PW + 2}" y="${p.y + H - 6}" width="${bw}" height="4" class="fill"/>`; }
-      svg += `<text x="${p.x + PW + BW / 2}" y="${p.y + 18}" text-anchor="middle" class="t">${st.name}</text>`;
-      if (isPool && s.lineages != null) svg += `<text x="${p.x + PW + BW / 2}" y="${p.y + 33}" text-anchor="middle" class="tm">${s.lineages}${st.max_in_flight ? " / " + st.max_in_flight : ""} in flight</text>`;
-      else svg += `<text x="${p.x + PW + BW / 2}" y="${p.y + 33}" text-anchor="middle" class="tm">${s.in_flight}${workers ? " / " + workers : ""} running</text>`;
-      svg += `<text x="${p.x + PW / 2}" y="${p.row === "top" ? p.y - 6 : p.y + H + 14}" text-anchor="middle" class="ts">${isPool ? "pool" : "queue"}</text>`;
-      svg += `</g>`;
+      if (workers) { const bw = Math.min(1, s.in_flight / workers) * (BW - 4); svg += `<rect x="${p.x + PW + 2}" y="${p.y + H - 5}" width="${bw}" height="3" class="fill"/>`; }
+      svg += `<text x="${bodyMid(st.name)}" y="${p.y + 17}" text-anchor="middle" class="t">${st.name}</text>`;
+      const line2 = isPool && s.lineages != null ? `${s.lineages}${st.max_in_flight ? "/" + st.max_in_flight : ""} alive` : `${s.in_flight}${workers ? "/" + workers : ""} running`;
+      svg += `<text x="${bodyMid(st.name)}" y="${p.y + 32}" text-anchor="middle" class="tm">${line2}</text>`;
+      const dem = Object.entries(st.demand || {}).map(([r, u]) => `${r} ${fmt(u, 2)}`).join(" · ");
+      svg += `<text x="${bodyMid(st.name)}" y="${p.y + 47}" text-anchor="middle" class="ts">${dem || "no demand"}</text>`;
+      svg += `<text x="${p.x + PW / 2}" y="${p.row === "top" ? p.y - 7 : p.y + H + 15}" text-anchor="middle" class="ts">${isPool ? "pool" : "queue"}</text>`;
     }
     // resources
     for (const r of resNames) {
       const p = resPos[r], v = (snap.resources || {})[r] || {}; const cap = v.cap ?? null, left = v.available;
-      svg += `<ellipse cx="${p.x}" cy="${p.y}" rx="${rW / 2 - 8}" ry="30" fill="${cap != null && v.used != null && v.used > 0 ? "var(--budget)" : "var(--bandwidth)"}" stroke="var(--fg)" stroke-width="1.2"/>`;
-      svg += `<text x="${p.x}" y="${p.y - 10}" text-anchor="middle" class="t">${r}</text>`;
+      svg += `<ellipse cx="${p.x}" cy="${p.y}" rx="${rW / 2 - 10}" ry="34" fill="${cap != null && v.used != null && v.used > 0 ? "var(--budget)" : "var(--bandwidth)"}" stroke="var(--fg)" stroke-width="1.2"/>`;
+      svg += `<text x="${p.x}" y="${p.y - 12}" text-anchor="middle" class="t">${r}</text>`;
       if (cap != null && left != null) {
-        const bw = rW - 56, fr = Math.max(0, Math.min(1, left / cap));
-        svg += `<rect x="${p.x - bw / 2}" y="${p.y - 2}" width="${bw}" height="7" class="usedbar"/><rect x="${p.x - bw / 2}" y="${p.y - 2}" width="${bw * fr}" height="7" class="leftbar"/>`;
-        svg += `<text x="${p.x}" y="${p.y + 20}" text-anchor="middle" class="tm">${fmt(left)} left of ${fmt(cap)}</text>`;
-      } else if (left != null) svg += `<text x="${p.x}" y="${p.y + 12}" text-anchor="middle" class="tm">${fmt(left)} left</text>`;
-      else if (v.used != null && v.used > 0) svg += `<text x="${p.x}" y="${p.y + 8}" text-anchor="middle" class="tm">${fmt(v.used)} spent, no cap</text><text x="${p.x}" y="${p.y + 22}" text-anchor="middle" class="tm">${fmt(v.in_flight)} in flight</text>`;
-      else svg += `<text x="${p.x}" y="${p.y + 12}" text-anchor="middle" class="tm">${fmt(v.in_flight)} in flight</text>`;
+        const bw = rW - 70, fr = Math.max(0, Math.min(1, left / cap));
+        svg += `<rect x="${p.x - bw / 2}" y="${p.y - 3}" width="${bw}" height="7" class="usedbar"/><rect x="${p.x - bw / 2}" y="${p.y - 3}" width="${bw * fr}" height="7" class="leftbar"/>`;
+        svg += `<text x="${p.x}" y="${p.y + 20}" text-anchor="middle" class="ts">${fmt(left)} of ${fmt(cap)} left</text>`;
+      } else if (left != null) svg += `<text x="${p.x}" y="${p.y + 10}" text-anchor="middle" class="ts">${fmt(left)} left</text>`;
+      else if (v.used != null && v.used > 0) svg += `<text x="${p.x}" y="${p.y + 6}" text-anchor="middle" class="ts">${fmt(v.used)} spent, no cap</text><text x="${p.x}" y="${p.y + 20}" text-anchor="middle" class="ts">${fmt(v.in_flight)} in flight</text>`;
+      else svg += `<text x="${p.x}" y="${p.y + 10}" text-anchor="middle" class="ts">${fmt(v.in_flight)} in flight</text>`;
     }
     svg += "</svg>";
     $("figure").innerHTML = svg;

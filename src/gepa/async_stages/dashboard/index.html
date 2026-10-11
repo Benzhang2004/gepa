@@ -33,7 +33,7 @@
   .chip .k { font-size: 10.5px; color: var(--fg2); text-transform: uppercase; letter-spacing: .05em; }
   .chip .v { font: 15px var(--mono); font-variant-numeric: tabular-nums; }
   #figure { background: var(--bg2); border: 1px solid var(--line); border-radius: 6px; padding: 4px; overflow-x: auto; }
-  #figure svg { display: block; min-width: 900px; font-family: var(--sans); }
+  #figure svg { display: block; min-width: 1000px; font-family: var(--sans); }
   .place { stroke: var(--fg); stroke-width: 1.2; }
   .body { stroke: var(--fg); stroke-width: 1.2; rx: 4; }
   .t { fill: var(--fg); font-size: 13px; } .tm { fill: var(--fg2); font: 11px var(--mono); } .ts { fill: var(--fg2); font-size: 10.5px; }
@@ -76,7 +76,7 @@
 
   <h2>Pipeline</h2>
   <div id="figure"></div>
-  <p class="legend">Each stage is its place (pale yellow pool, white queue; the bar is how full it is, with the count) and its body (lavender head stage, green worker stage, running ÷ workers). Solid arrows carry items; the label is items per minute over the last minute and the total. Dashed lines are nominal demands on the resources in the middle band, where the green bar is what is left of the cap. Small circles are where items end.</p>
+  <p class="legend">Each stage is its place (pale yellow pool, white queue; the bar is how full it is, with the count) and its body (lavender head stage, green worker stage; running ÷ workers, or lineages alive ÷ cap for a pool; the third line is the nominal demand per firing). Arrows carry items; the label is items per minute over the last minute and the total. The middle band holds the resources, the green bar being what is left of each cap. Small circles are where items end.</p>
 
   <h2>Over time</h2>
   <div id="timelines"></div>
