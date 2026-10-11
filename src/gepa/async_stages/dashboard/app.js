@@ -129,7 +129,6 @@ if (typeof document !== "undefined") (function () {
     const bandL = 230, bandR = W - 160, rW = Math.min(240, (bandR - bandL - 20) / Math.max(1, resNames.length));
     const resPos = {}; resNames.forEach((r, i) => { resPos[r] = { x: bandL + 10 + rW / 2 + i * rW, y: yRes }; });
     svg += `<rect x="${bandL}" y="${yRes - 46}" width="${bandR - bandL}" height="92" rx="8" fill="none" stroke="var(--line)" stroke-dasharray="5 4"/>`;
-    svg += `<text x="${bandL + 10}" y="${yRes - 52}" class="ts">engine resources: what is left of each cap</text>`;
     // demand lines: from the body's edge facing the band to the ellipse's near edge; faint, bold on hover of the stage
     for (const st of topo.stages) for (const r of Object.keys(st.demand || {})) {
       if (!resPos[r]) continue; const p = pos[st.name], q = resPos[r], up = p.row === "top";
@@ -190,9 +189,7 @@ if (typeof document !== "undefined") (function () {
       const line2 = isPool && s.lineages != null ? `${s.lineages}${st.max_in_flight ? "/" + st.max_in_flight : ""} alive` : `${s.in_flight}${workers ? "/" + workers : ""} running`;
       svg += `<text x="${bodyMid(st.name)}" y="${p.y + 32}" text-anchor="middle" class="tm">${line2}</text>`;
       const dems = Object.entries(st.demand || {}).map(([r, u]) => `${r} ${fmt(u, 2)}`);
-      if (!dems.length) svg += `<text x="${bodyMid(st.name)}" y="${p.y + 48}" text-anchor="middle" class="ts">no demand</text>`;
-      else dems.slice(0, 2).forEach((d, k) => { svg += `<text x="${bodyMid(st.name)}" y="${p.y + 48 + k * 13}" text-anchor="middle" class="ts">${d}</text>`; });
-      svg += `<text x="${p.x + PW / 2}" y="${p.row === "top" ? p.y - 7 : p.y + H + 14}" text-anchor="middle" class="ts">${isPool ? "pool" : "queue"}</text>`;
+      dems.slice(0, 2).forEach((d, k) => { svg += `<text x="${bodyMid(st.name)}" y="${p.y + 48 + k * 13}" text-anchor="middle" class="ts">${d}</text>`; });
       svg += `</g>`;
     }
     // resources
