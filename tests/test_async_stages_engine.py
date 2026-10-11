@@ -309,3 +309,41 @@ def test_fatal_error_settles_work_still_in_flight():
         engine.run()
     assert_settled(engine, resources)
     assert engine.stats["stop_reason"] == "error"
+
+
+def test_status_snapshot_and_topology(tmp_path):
+    """The engine writes a live snapshot beside the event log, and the run_start event carries the topology."""
+    import json
+
+    source = Source(demand={"in_flight": 1}, hold=["in_flight"])
+    evaluate = Evaluate(workers=4)
+    gate = Gate(lambda t: t.value >= 0)
+    commit = Commit()
+    pipeline = Pipeline().chain(source, evaluate, gate).edge(gate, commit, "accepted").edge(commit, source)
+    resources = {"evals": Budget(12, name="evals"), "evaluator": Slots(4), "in_flight": Slots(2, name="in_flight")}
+    engine = Engine(pipeline, resources, executors={"evaluator": 4}, run_dir=str(tmp_path), status_every=0.0)
+    engine.inject("source", Toy(parent=0, value=0.0, score=0.0))
+    engine.run()
+
+    topo = engine.topology()
+    assert [s["name"] for s in topo["stages"]] == ["source", "evaluate", "gate", "commit"]
+    assert topo["stages"][0]["mode"] == "read" and topo["stages"][0]["hold"] == ["in_flight"]
+    assert topo["stages"][1]["kind"] == "worker" and topo["stages"][1]["workers"] == 4
+    assert {"src": "gate", "dst": "commit", "label": "accepted"} in topo["edges"]
+    assert topo["resources"]["in_flight"]["cap"] == 2
+
+    snap = json.loads((tmp_path / "async_status.json").read_text())
+    assert snap["stop_reason"] == "exhausted"
+    assert snap["edges"]["gate->commit:accepted"]["count"] == snap["stages"]["commit"]["completed"]
+    assert snap["edges"]["commit->source"]["count"] == snap["edges"]["gate->commit:accepted"]["count"]
+    assert "evaluate:budget" in snap["terminals"] or snap["outcomes"].get("budget", 0) == 0
+    assert snap["resources"]["evals"]["available"] == 0
+    assert all(s["in_flight"] == 0 for s in snap["stages"].values())
+    assert all(snap["stages"][st["name"]]["waiting"] == 0 for st in topo["stages"] if st["mode"] == "consume")
+    assert snap["stages"]["source"]["waiting"] >= 1  # a read place keeps its content: the pool
+
+    first = json.loads((tmp_path / "async_events.jsonl").read_text().splitlines()[0])
+    assert first["kind"] in ("run_start", "item")
+    starts = [json.loads(line) for line in (tmp_path / "async_events.jsonl").read_text().splitlines()]
+    start = next(e for e in starts if e["kind"] == "run_start")
+    assert start["topology"]["edges"] == topo["edges"]

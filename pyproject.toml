@@ -106,7 +106,7 @@ langchain = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-gepa = ["py.typed"]
+gepa = ["py.typed", "async_stages/dashboard/*.html", "async_stages/dashboard/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

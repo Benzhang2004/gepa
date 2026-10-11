@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Async Pipeline Dashboard</title>
+<style>
+  :root {
+    --bg: #f7f7f4; --bg2: #ffffff; --fg: #1d1f24; --fg2: #585c66; --fg3: #8a8f9a; --line: #d9dad5;
+    --accent: #2f6fed; --accent-soft: rgba(47,111,237,.14);
+    --pool: #fff6cc; --queue: #ffffff; --head: #e3e0f7; --worker: #dcf3e2; --bandwidth: #ffe6cc; --budget: #ffd9d9;
+    --good: #2a9d6f; --warn: #d9981f; --bad: #c43d3d; --muted: #9aa0ab;
+    --sans: system-ui, -apple-system, "Segoe UI", sans-serif; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) { :root {
+    --bg: #15171b; --bg2: #1d2025; --fg: #e8e9ec; --fg2: #a7abb5; --fg3: #6f747f; --line: #2b2f36;
+    --accent: #6f9bff; --accent-soft: rgba(111,155,255,.18);
+    --pool: #4a4420; --queue: #2a2d33; --head: #3a3660; --worker: #24483a; --bandwidth: #4d3a24; --budget: #4d2727;
+    --good: #4cc290; --warn: #e0b04a; --bad: #e46a6a; --muted: #6f747f; color-scheme: dark } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 var(--sans); }
+  .wrap { max-width: 1320px; margin: 0 auto; padding: 14px 16px 40px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 18px; margin-bottom: 8px; }
+  h1 { font-size: 18px; font-weight: 600; margin: 0; }
+  h2 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--fg2); margin: 22px 0 8px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; padding: 8px 12px; background: var(--bg2); border: 1px solid var(--line); border-radius: 6px; }
+  .controls label { display: inline-flex; align-items: center; gap: 6px; color: var(--fg2); }
+  select, input[type=number], input[type=range], button { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 3px 8px; }
+  input[type=range] { width: 260px; padding: 0; }
+  button { cursor: pointer; } button:hover { border-color: var(--fg3); }
+  #status { font: 12px var(--mono); color: var(--fg2); }
+  #summary { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { display: inline-flex; flex-direction: column; padding: 5px 10px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg2); min-width: 86px; }
+  .chip .k { font-size: 10.5px; color: var(--fg2); text-transform: uppercase; letter-spacing: .05em; }
+  .chip .v { font: 15px var(--mono); font-variant-numeric: tabular-nums; }
+  #figure { background: var(--bg2); border: 1px solid var(--line); border-radius: 6px; padding: 4px; overflow-x: auto; }
+  #figure svg { display: block; min-width: 900px; font-family: var(--sans); }
+  .place { stroke: var(--fg); stroke-width: 1.2; }
+  .body { stroke: var(--fg); stroke-width: 1.2; rx: 4; }
+  .t { fill: var(--fg); font-size: 13px; } .tm { fill: var(--fg2); font: 11px var(--mono); } .ts { fill: var(--fg2); font-size: 10.5px; }
+  .edge { stroke: var(--fg); stroke-width: 1.6; fill: none; } .edge.hot { stroke: var(--accent); }
+  .demand { stroke: var(--fg3); stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
+  .fill { fill: var(--accent); opacity: .35; } .leftbar { fill: var(--good); } .usedbar { fill: var(--line); }
+  .term { fill: var(--line); stroke: var(--fg3); }
+  #timelines { display: grid; gap: 10px; }
+  canvas.panel { width: 100%; display: block; background: var(--bg2); border: 1px solid var(--line); border-radius: 6px; }
+  .tablewrap { overflow-x: auto; background: var(--bg2); border: 1px solid var(--line); border-radius: 6px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 5px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { font-weight: 500; color: var(--fg2); font-size: 12px; } tr:last-child td { border-bottom: 0; }
+  td.num, th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 14px; }
+  .legend { color: var(--fg2); font-size: 12px; margin: 6px 0 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Async Pipeline Dashboard</h1>
+    <span id="runName" class="tm"></span>
+    <span id="status"></span>
+  </header>
+  <div class="controls">
+    <label>Source
+      <select id="source">
+        <option value="live">live (status.json, polled)</option>
+        <option value="replay">replay (events.jsonl)</option>
+      </select>
+    </label>
+    <label>Poll every <input type="number" id="pollSec" min="1" max="60" value="2"> s</label>
+    <label>or open a log <input type="file" id="fileInput" accept=".jsonl,.json,.txt"></label>
+    <label id="scrubWrap" hidden>Replay time <input type="range" id="scrub" min="0" max="1000" value="1000"> <span id="scrubLabel" class="tm"></span>
+      <button type="button" id="play">play</button></label>
+  </div>
+
+  <div id="summary" style="margin-top:10px"></div>
+
+  <h2>Pipeline</h2>
+  <div id="figure"></div>
+  <p class="legend">Each stage is its place (pale yellow pool, white queue; the bar is how full it is, with the count) and its body (lavender head stage, green worker stage, running ÷ workers). Solid arrows carry items; the label is items per minute over the last minute and the total. Dashed lines are nominal demands on the resources in the middle band, where the green bar is what is left of the cap. Small circles are where items end.</p>
+
+  <h2>Over time</h2>
+  <div id="timelines"></div>
+
+  <h2>Edges, resources</h2>
+  <div class="grid2">
+    <div class="tablewrap"><table><thead><tr><th>edge</th><th class="num">items</th><th class="num">last minute</th></tr></thead><tbody id="edgeRows"></tbody></table></div>
+    <div class="tablewrap"><table><thead><tr><th>resource</th><th class="num">left</th><th class="num">cap</th><th class="num">in flight</th><th class="num">taken</th><th class="num">used</th><th class="num">refused</th></tr></thead><tbody id="resRows"></tbody></table></div>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

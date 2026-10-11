@@ -15,9 +15,11 @@ The engine knows nothing about candidates, lineage or data. It reads three field
 
 from __future__ import annotations
 
+import json
+import os
 import queue
 import time
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -64,8 +66,16 @@ class Engine:
         raise_on_exception: bool = True,
         on_item_end: Callable[[WorkItem[Any], str], None] | None = None,
         gap_watch: str | None = None,
+        status_every: float | None = 2.0,
     ):
         self.pipeline = pipeline
+        #: Seconds between writes of ``async_status.json`` under ``run_dir`` (a live snapshot of places, edges
+        #: and resources for a dashboard); ``None`` turns it off.
+        self.status_every = status_every
+        self._status_written_at = float("-inf")
+        self._edge_counts: Counter[tuple[str, str, str | None]] = Counter()
+        self._edge_recent: dict[tuple[str, str, str | None], deque[float]] = {}
+        self._terminals: Counter[tuple[str, str]] = Counter()
         #: When set, every fire records how many completions of this stage happened since the item was created
         #: (its distribution per stage is ``stats["gaps"]``; "commit" in the shipped pipelines).
         self.gap_watch = gap_watch
@@ -109,7 +119,10 @@ class Engine:
         self.pipeline.validate(shared=[n for n in self.resources if n not in self.pipeline.resources])
         for resource in self.resources.values():
             resource.open()
-        self.events.emit("run_start", stages=list(self.pipeline.stages), resources=list(self.resources))
+        self.events.emit(
+            "run_start", stages=list(self.pipeline.stages), resources=list(self.resources), topology=self.topology()
+        )
+        self._write_status(force=True)
         try:
             while True:
                 self._drain_completions()
@@ -119,6 +132,7 @@ class Engine:
                     self._begin_stop(self._stop_reason or "requested")
                 fired = self._fire_all()
                 self.events.tick(dict(self.inflight), dict(self._in_flight_units))
+                self._write_status()
                 busy = any(self.inflight.values())
                 if not busy and not fired:
                     # Nothing runs and nothing can fire: the drain is over, or (items waiting) a wiring error.
@@ -144,6 +158,7 @@ class Engine:
             self.stats = self.events.summary()
             self.stats["counters"] = dict(self.counters)
             self.events.emit("run_end", **{k: v for k, v in self.stats.items() if k not in ("stages", "resources")})
+            self._write_status(force=True)
             self.events.close()
         if self._fatal is not None:
             raise self._fatal
@@ -416,8 +431,12 @@ class Engine:
         tag, item.tag = item.tag, None
         dst = self.pipeline.successor(stage.name, tag)
         if dst is None:
+            self._terminals[(stage.name, tag or "finished")] += 1
             self._end_item(item, tag or "finished")
             return
+        key = (stage.name, dst.name, tag)
+        self._edge_counts[key] += 1
+        self._edge_recent.setdefault(key, deque()).append(time.monotonic())
         self._deliver(dst, item)
 
     def _deliver(self, dst: Stage[Any, Any], item: WorkItem[Any]) -> None:
@@ -431,6 +450,96 @@ class Engine:
         depth = len(self.places[dst.name])
         st = self.events.stage(dst.name)
         st.max_queue_depth = max(st.max_queue_depth, depth)
+
+    # ------------------------------------------------------------------ status
+
+    def topology(self) -> dict[str, Any]:
+        """The pipeline as drawn: stages in declaration order with their place mode, body kind, widths, nominal
+        demand and holds; the labelled edges; the resources with their caps. Static for the run."""
+        stages = []
+        for name, stage in self.pipeline.stages.items():
+            stages.append(
+                {
+                    "name": name,
+                    "mode": stage.mode,
+                    "kind": "worker" if isinstance(stage, WorkerStage) else "head",
+                    "workers": stage.workers,
+                    "max_workers": stage.max_workers,
+                    "max_queue": stage.max_queue,
+                    "bandwidth": stage.bandwidth,
+                    "demand": dict(stage.nominal_demand),
+                    "hold": sorted(stage.hold),
+                }
+            )
+        edges = [{"src": src, "dst": dst, "label": label} for (src, label), dst in self.pipeline.edges.items()]
+        resources = {name: {"cap": getattr(r, "cap", None)} for name, r in self.resources.items()}
+        return {"stages": stages, "edges": edges, "resources": resources}
+
+    def snapshot(self) -> dict[str, Any]:
+        """The run right now: how full each place is, what runs, what crossed each edge and at what rate over the
+        last minute, what ended where, and what each resource has left. Engine thread only."""
+        now = time.monotonic()
+        edges = {}
+        for key, n in self._edge_counts.items():
+            recent = self._edge_recent.get(key)
+            if recent is not None:
+                while recent and now - recent[0] > 60.0:
+                    recent.popleft()
+            src, dst, label = key
+            edges[f"{src}->{dst}" + (f":{label}" if label else "")] = {
+                "src": src,
+                "dst": dst,
+                "label": label,
+                "count": n,
+                "per_min": len(recent) if recent is not None else 0,
+            }
+        stages = {}
+        for name, stage in self.pipeline.stages.items():
+            stages[name] = {
+                "waiting": len(self.places[name]),
+                "in_flight": self.inflight[name],
+                "workers": stage.max_workers,
+                "completed": self.counters[name],
+            }
+        resources = {}
+        for name, r in self.resources.items():
+            stats = self.events.resource(name)
+            available = r.available
+            resources[name] = {
+                "available": available() if callable(available) else available,
+                "cap": getattr(r, "cap", None),
+                "in_flight": self._in_flight_units.get(name, 0.0),
+                "taken": stats.taken,
+                "used": stats.used,
+                "refused": stats.refused,
+            }
+        return {
+            "t": round(self.events.now(), 3),
+            "topology": self.topology(),
+            "stopping": self._stopping,
+            "stop_reason": self._stop_reason,
+            "stages": stages,
+            "edges": edges,
+            "terminals": {f"{stage}:{outcome}": n for (stage, outcome), n in self._terminals.items()},
+            "outcomes": dict(self.events.outcomes),
+            "resources": resources,
+        }
+
+    def _write_status(self, force: bool = False) -> None:
+        if self.status_every is None or self.run_dir is None:
+            return
+        now = time.monotonic()
+        if not force and now - self._status_written_at < self.status_every:
+            return
+        self._status_written_at = now
+        path = os.path.join(self.run_dir, "async_status.json")
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(self.snapshot(), fh, default=str)
+            os.replace(tmp, path)
+        except OSError as e:  # a full disk must not stop the run
+            self.events.emit("error", stage="status", error=repr(e))
 
     # ------------------------------------------------------------------ items
 
@@ -461,6 +570,7 @@ class Engine:
                     break
         for name in item.held:
             self.events.stranded[name] = self.events.stranded.get(name, 0.0)
+        self._terminals[(stage.name, outcome)] += 1
         self._end_item(item, outcome, **fields)
 
     def _end_item(self, item: WorkItem[Any], outcome: str, log: bool = True, **fields: Any) -> None:
