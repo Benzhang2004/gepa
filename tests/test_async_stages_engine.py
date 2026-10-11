@@ -354,3 +354,28 @@ def test_status_snapshot_and_topology(tmp_path):
     starts = [json.loads(line) for line in (tmp_path / "async_events.jsonl").read_text().splitlines()]
     start = next(e for e in starts if e["kind"] == "run_start")
     assert start["topology"]["edges"] == topo["edges"]
+
+
+def test_a_full_disk_stops_the_log_not_the_run(tmp_path, monkeypatch):
+    """Observability is best effort: when the event log or the status snapshot cannot be written, the run goes
+    on and the stats still come back."""
+    import builtins
+
+    real_open = builtins.open
+    failing = {"on": False}
+
+    def flaky_open(path, *a, **k):
+        if failing["on"] and str(path).startswith(str(tmp_path)):
+            raise OSError(28, "No space left on device")
+        return real_open(path, *a, **k)
+
+    engine, source, evaluate, gate, commit, resources = build(evals=12, evaluator=4)
+    engine.run_dir = str(tmp_path)
+    engine.status_every = 0.0
+    engine.events = type(engine.events)(str(tmp_path), enabled=True)
+    monkeypatch.setattr(builtins, "open", flaky_open)
+    failing["on"] = True
+    stats = engine.run()
+    assert stats["stop_reason"] == "exhausted" and commit.commits >= 1
+    assert engine.status_every is None and engine.events._fh is None
+    assert_settled(engine, resources)

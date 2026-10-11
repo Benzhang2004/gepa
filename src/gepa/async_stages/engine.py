@@ -16,6 +16,7 @@ The engine knows nothing about candidates, lineage or data. It reads three field
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import time
@@ -527,8 +528,9 @@ class Engine:
             with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(self.snapshot(), fh, default=str)
             os.replace(tmp, path)
-        except OSError as e:  # a full disk must not stop the run
-            self.events.emit("error", stage="status", error=repr(e))
+        except OSError as e:  # a full disk must not stop the run: give up on the snapshot, say so once
+            self.status_every = None
+            logging.getLogger(__name__).warning("async_status.json not written (%r); giving up on it for this run", e)
 
     # ------------------------------------------------------------------ items
 

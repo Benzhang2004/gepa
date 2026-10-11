@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from collections import Counter
@@ -99,8 +100,15 @@ class EventLog:
     def emit(self, kind: str, **fields: Any) -> None:
         if self._fh is None:
             return
-        self._fh.write(json.dumps({"t": round(self.now(), 4), "kind": kind, **fields}, default=str) + "\n")
-        self._fh.flush()
+        try:
+            self._fh.write(json.dumps({"t": round(self.now(), 4), "kind": kind, **fields}, default=str) + "\n")
+            self._fh.flush()
+        except OSError as e:  # a full disk must not stop the run: the log ends here, the stats go on
+            logging.getLogger(__name__).warning("async_events.jsonl not written (%r); event log closed", e)
+            try:
+                self._fh.close()
+            finally:
+                self._fh = None
 
     def close(self) -> None:
         if self._fh is not None:
