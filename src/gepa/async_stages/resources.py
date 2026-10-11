@@ -11,7 +11,10 @@ decided by the stages that draw on it. Each resource implements the protocol wit
 generic pool. A resource whose supply depends on time (a per-minute quota) does its time check inside ``take``.
 
 ``take`` returns the whole demand, ``0`` for "not now", and raises :class:`ResourceExhaustedError` for "never
-again" (a demand above the cap is one such case; the engine refuses it before the run when it is declared): the
+again" (a demand above the cap is one such case; the engine refuses it before the run when it is declared). A
+resource with no cap (``cap=None``: ``usd`` without ``max_token_cost``, ``evals`` on a server without an eval limit)
+is a meter, not a control: it grants every demand and records what was used, for the stats, the dashboard and the
+result's cost, and so that a cap can be set later without touching the pipeline. The
 resource is the one that knows which, since it sees whether anything of it is still out and could come back.
 
 This module holds the protocol and the three resources that come from optimize_anything: ``evals`` (the eval
