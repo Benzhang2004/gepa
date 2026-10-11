@@ -38,7 +38,9 @@
   .body { stroke: var(--fg); stroke-width: 1.2; rx: 4; }
   .t { fill: var(--fg); font-size: 13px; } .tm { fill: var(--fg2); font: 11px var(--mono); } .ts { fill: var(--fg2); font-size: 10.5px; }
   .edge { stroke: var(--fg); stroke-width: 1.6; fill: none; } .edge.hot { stroke: var(--accent); }
-  .demand { stroke: var(--fg3); stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
+  .demand { stroke: var(--fg3); stroke-width: 1; stroke-dasharray: 4 4; fill: none; opacity: .35; }
+  .demand.hot { stroke: var(--accent); stroke-width: 1.8; opacity: 1; }
+  g.stage { cursor: default; }
   .fill { fill: var(--accent); opacity: .35; } .leftbar { fill: var(--good); } .usedbar { fill: var(--line); }
   .term { fill: var(--line); stroke: var(--fg3); }
   #timelines { display: grid; gap: 10px; }
@@ -76,7 +78,7 @@
 
   <h2>Pipeline</h2>
   <div id="figure"></div>
-  <p class="legend">Each stage is its place (pale yellow pool, white queue; the bar is how full it is, with the count) and its body (lavender head stage, green worker stage; running ÷ workers, or lineages alive ÷ cap for a pool; the third line is the nominal demand per firing). Arrows carry items; the label is items per minute over the last minute and the total. The middle band holds the resources, the green bar being what is left of each cap. Small circles are where items end.</p>
+  <p class="legend">Each stage is its place (pale yellow pool, white queue; the bar is how full it is, with the count) and its body (lavender head stage, green worker stage; running ÷ workers, or lineages alive ÷ cap for a pool; the last lines are the nominal demand per firing, also drawn as faint dashed lines to the resources, bold when you hover the stage). Arrows carry items; the label is items per minute over the last minute and the total. The middle band holds the resources, the green bar being what is left of each cap. Small circles are where items end.</p>
 
   <h2>Over time</h2>
   <div id="timelines"></div>

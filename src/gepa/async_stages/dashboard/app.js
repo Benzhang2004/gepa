@@ -130,6 +130,11 @@ if (typeof document !== "undefined") (function () {
     const resPos = {}; resNames.forEach((r, i) => { resPos[r] = { x: bandL + 10 + rW / 2 + i * rW, y: yRes }; });
     svg += `<rect x="${bandL}" y="${yRes - 46}" width="${bandR - bandL}" height="92" rx="8" fill="none" stroke="var(--line)" stroke-dasharray="5 4"/>`;
     svg += `<text x="${bandL + 10}" y="${yRes - 52}" class="ts">engine resources: what is left of each cap</text>`;
+    // demand lines: from the body's edge facing the band to the ellipse's near edge; faint, bold on hover of the stage
+    for (const st of topo.stages) for (const r of Object.keys(st.demand || {})) {
+      if (!resPos[r]) continue; const p = pos[st.name], q = resPos[r], up = p.row === "top";
+      svg += `<line data-stage="${st.name}" x1="${bodyMid(st.name)}" y1="${up ? p.y + H : p.y}" x2="${q.x}" y2="${q.y + (up ? -36 : 36)}" class="demand"/>`;
+    }
     // edges
     const edgeStats = snap.edges || {};
     const statFor = (src, dst, label) => edgeStats[`${src}->${dst}` + (label ? ":" + label : "")] || Object.values(edgeStats).find(e => e.src === src && e.dst === dst) || { count: 0, per_min: 0 };
@@ -174,6 +179,7 @@ if (typeof document !== "undefined") (function () {
       const isPool = st.mode === "read";
       scaleMax[st.name] = Math.max(scaleMax[st.name] || 1, s.waiting, st.max_queue || 0);
       const fillH = Math.min(1, s.waiting / scaleMax[st.name]) * (H - 4);
+      svg += `<g class="stage" data-stage="${st.name}">`;
       svg += `<rect x="${p.x}" y="${p.y}" width="${PW}" height="${H}" class="place" fill="${isPool ? "var(--pool)" : "var(--queue)"}"/>`;
       svg += `<rect x="${p.x + 2}" y="${p.y + H - 2 - fillH}" width="${PW - 4}" height="${fillH}" class="fill"/>`;
       svg += `<text x="${p.x + PW / 2}" y="${p.y + H / 2 + 4}" text-anchor="middle" class="tm">${s.waiting}</text>`;
@@ -187,6 +193,7 @@ if (typeof document !== "undefined") (function () {
       if (!dems.length) svg += `<text x="${bodyMid(st.name)}" y="${p.y + 48}" text-anchor="middle" class="ts">no demand</text>`;
       else dems.slice(0, 2).forEach((d, k) => { svg += `<text x="${bodyMid(st.name)}" y="${p.y + 48 + k * 13}" text-anchor="middle" class="ts">${d}</text>`; });
       svg += `<text x="${p.x + PW / 2}" y="${p.row === "top" ? p.y - 7 : p.y + H + 14}" text-anchor="middle" class="ts">${isPool ? "pool" : "queue"}</text>`;
+      svg += `</g>`;
     }
     // resources
     for (const r of resNames) {
@@ -203,6 +210,11 @@ if (typeof document !== "undefined") (function () {
     }
     svg += "</svg>";
     $("figure").innerHTML = svg;
+    for (const g of $("figure").querySelectorAll("g.stage")) {
+      const name = g.dataset.stage, lines = $("figure").querySelectorAll(`line.demand[data-stage="${name}"]`);
+      g.addEventListener("mouseenter", () => lines.forEach(l => l.classList.add("hot")));
+      g.addEventListener("mouseleave", () => lines.forEach(l => l.classList.remove("hot")));
+    }
   }
 
   function renderSummary(snap) {
