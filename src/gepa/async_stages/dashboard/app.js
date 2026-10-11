@@ -138,7 +138,7 @@ if (typeof document !== "undefined") (function () {
     const edgeStats = snap.edges || {};
     const statFor = (src, dst, label) => edgeStats[`${src}->${dst}` + (label ? ":" + label : "")] || Object.values(edgeStats).find(e => e.src === src && e.dst === dst) || { count: 0, per_min: 0 };
     const idx = Object.fromEntries(order.map((s, i) => [s, i]));
-    const lab = (st, e) => `${fmt(st.per_min, 0)}/min · ${st.count}`;
+    const lab = (st, e) => `${fmt(st.per_min, 0)}/min, ${st.count} total`;
     const tag = (e, x, y, anchor = "middle") => (e.label ? `<text x="${x}" y="${y}" text-anchor="${anchor}" class="ts">${e.label}</text>` : "");
     for (const e of topo.edges) {
       if (!(e.src in pos) || !(e.dst in pos)) continue;
@@ -271,7 +271,7 @@ if (typeof document !== "undefined") (function () {
       const r = await fetch("status.json", { cache: "no-store" }); if (!r.ok) throw new Error(r.status + " " + r.statusText);
       const snap = await r.json();
       if (!history.t.length || snap.t !== history.t[history.t.length - 1]) { history.t.push(snap.t); history.snaps.push(snap); if (history.t.length > 3000) { history.t.shift(); history.snaps.shift(); } }
-      render(snap, history); setStatus("live · snapshot at " + fmtMin(snap.t) + (snap.stop_reason ? " · run ended: " + snap.stop_reason : ""));
+      render(snap, history); setStatus("live , snapshot at " + fmtMin(snap.t) + (snap.stop_reason ? " , run ended: " + snap.stop_reason : ""));
     } catch (e) { setStatus("live: " + e.message + " (serve a run directory with python -m gepa.async_stages.dashboard, or switch to replay)"); }
   }
   function startLive() { stopTimers(); mode = "live"; $("scrubWrap").hidden = true; pollLive(); timer = setInterval(pollLive, Math.max(1, Number($("pollSec").value)) * 1000); }
@@ -284,7 +284,7 @@ if (typeof document !== "undefined") (function () {
     replayHist = { t: [], snaps: [] };
     for (let i = 0; i <= N; i++) { const t = wall * i / N; replayHist.t.push(t); replayHist.snaps.push(snapshotAt(replay, t)); }
     $("scrubWrap").hidden = false; $("scrub").value = 1000; showReplayAt(1);
-    setStatus("replay · " + replay.fires.length.toLocaleString() + " fires · " + fmtMin(wall) + (replay.topology.inferred ? " · topology inferred from the item flow (older log)" : ""));
+    setStatus("replay , " + replay.fires.length.toLocaleString() + " fires , " + fmtMin(wall) + (replay.topology.inferred ? " , topology inferred from the item flow (older log)" : ""));
   }
   function showReplayAt(frac) {
     const wall = replay.tEnd - replay.t0, t = wall * frac, snap = snapshotAt(replay, t);
