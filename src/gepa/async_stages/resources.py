@@ -10,8 +10,8 @@ the stage reports what it used) or a bandwidth (rented: nothing is reported used
 decided by the stages that draw on it. Each resource implements the protocol with its own logic; there is no
 generic pool. A resource whose supply depends on time (a per-minute quota) does its time check inside ``take``.
 
-``take`` returns what it took (the whole demand, or the whole cap for a demand above it, which the holder then
-serializes inside), ``0`` for "not now", and raises :class:`ResourceExhaustedError` for "never again": the
+``take`` returns the whole demand, ``0`` for "not now", and raises :class:`ResourceExhaustedError` for "never
+again" (a demand above the cap is one such case; the engine refuses it before the run when it is declared): the
 resource is the one that knows which, since it sees whether anything of it is still out and could come back.
 
 This module holds the protocol and the three resources that come from optimize_anything: ``evals`` (the eval
@@ -47,7 +47,8 @@ class Resource(Protocol):
 class Evaluator:
     """Concurrent evaluations: the eval server's ``max_concurrency``, mirrored so the engine never dispatches an
     evaluation that would only block a thread. Rented: everything comes back at completion. A demand above the
-    cap (a 1,000-trace validation under a limit of 1,000) takes the whole cap and the server serializes inside it."""
+    cap can never be met and raises; a stage that evaluates more examples than the cap declares the cap and the
+    server serializes inside it."""
 
     name = "evaluator"
 
@@ -63,10 +64,11 @@ class Evaluator:
     def take(self, units: float) -> float:
         if units <= 0:
             return 0.0
-        want = min(units, self.cap)
-        if self._out + want <= self.cap:
-            self._out += want
-            return want
+        if units > self.cap:
+            raise ResourceExhaustedError(f"{self.name}: {units} asked, cap is {self.cap}")
+        if self._out + units <= self.cap:
+            self._out += units
+            return units
         return 0.0  # the units out come back; never exhausted
 
     def put(self, units: float, used: float = 0.0) -> None:
@@ -101,13 +103,14 @@ class Usd:
         if self.cap is None:
             self._out += units
             return units
-        want = min(units, self.cap)
-        if want <= self._available:
-            self._available -= want
-            self._out += want
-            return want
+        if units > self.cap:
+            raise ResourceExhaustedError(f"{self.name}: {units} asked, cap is {self.cap}")
+        if units <= self._available:
+            self._available -= units
+            self._out += units
+            return units
         if self._out == 0:
-            raise ResourceExhaustedError(f"{self.name}: {want} asked, {self._available} left and nothing in flight")
+            raise ResourceExhaustedError(f"{self.name}: {units} asked, {self._available} left and nothing in flight")
         return 0.0
 
     def put(self, units: float, used: float = 0.0) -> None:
@@ -179,13 +182,14 @@ class Evals:
             if self._lease is None:
                 self._out += units
                 return units
-            want = min(units, self._lease)
-            if want <= self._available:
-                self._available -= want
-                self._out += want
-                return want
+            if units > self._lease:
+                raise ResourceExhaustedError(f"evals: {units} asked, the lease is {self._lease}")
+            if units <= self._available:
+                self._available -= units
+                self._out += units
+                return units
             if self._out == 0:
-                raise ResourceExhaustedError(f"evals: {want} asked, {self._available} left and nothing in flight")
+                raise ResourceExhaustedError(f"evals: {units} asked, {self._available} left and nothing in flight")
             return 0.0
         from gepa.oa.budget import BudgetExhausted
 

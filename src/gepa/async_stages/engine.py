@@ -10,7 +10,7 @@ used). Head bodies run inline on the engine thread; worker bodies on a thread po
 stage's own ``workers``.
 
 The engine knows nothing about candidates, lineage or data. It reads three fields of an item for its decisions
-(id, units held, tag) and writes four as bookkeeping (parent id, fan-out count, stamps, outcome).
+(id, tag) and writes its bookkeeping (parent id, fan-out count, stamps, origin, lineage, outcome).
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from gepa.async_stages.events import EventLog
-from gepa.async_stages.pipeline import Pipeline
+from gepa.async_stages.pipeline import Pipeline, PipelineError
 from gepa.async_stages.resources import Resource, ResourceExhaustedError
 from gepa.async_stages.stage import Stage, WorkerStage, WorkItem
 
@@ -35,7 +35,7 @@ from gepa.async_stages.stage import Stage, WorkerStage, WorkItem
 class _Firing:
     stage: Stage[Any, Any]
     item: WorkItem[Any]
-    demand: dict[str, float]  # what was taken from the pools for this firing (after serving from held units)
+    demand: dict[str, float]  # what was taken from the resources for this firing
     started: float
 
 
@@ -73,6 +73,8 @@ class Engine:
         #: and resources for a dashboard); ``None`` turns it off.
         self.status_every = status_every
         self._status_written_at = float("-inf")
+        self._lineage_alive: dict[int, int] = {}  # lineage id -> items of it alive
+        self._origin_alive: dict[str, set[int]] = {}  # read stage -> lineages alive from it
         self._edge_counts: Counter[tuple[str, str, str | None]] = Counter()
         self._edge_recent: dict[tuple[str, str, str | None], deque[float]] = {}
         self._terminals: Counter[tuple[str, str]] = Counter()
@@ -117,6 +119,11 @@ class Engine:
 
     def run(self) -> dict[str, Any]:
         self.pipeline.validate(shared=[n for n in self.resources if n not in self.pipeline.resources])
+        for name, stage in self.pipeline.stages.items():
+            for res_name, units in stage.nominal_demand.items():
+                cap = getattr(self.resources[res_name], "cap", None)
+                if cap is not None and units > cap:
+                    raise PipelineError(f"stage {name!r} demands {units} of {res_name!r}, whose cap is {cap}")
         for resource in self.resources.values():
             resource.open()
         self.events.emit(
@@ -131,7 +138,11 @@ class Engine:
                 if self._stop_requested and not self._stopping:
                     self._begin_stop(self._stop_reason or "requested")
                 fired = self._fire_all()
-                self.events.tick(dict(self.inflight), dict(self._in_flight_units))
+                self.events.tick(
+                    dict(self.inflight),
+                    dict(self._in_flight_units),
+                    {name: len(ids) for name, ids in self._origin_alive.items()},
+                )
                 self._write_status()
                 busy = any(self.inflight.values())
                 if not busy and not fired:
@@ -145,7 +156,7 @@ class Engine:
             for ex in self._executors.values():
                 ex.shutdown(wait=True, cancel_futures=False)
             self._drain_completions(force=True)
-            # Items still waiting in a consume place cannot run any more: end them so what they hold comes back.
+            # Items still waiting in a consume place cannot run any more: end them.
             for name, stage in self.pipeline.stages.items():
                 if stage.mode != "consume":
                     continue
@@ -212,7 +223,7 @@ class Engine:
                     return fired
         return fired
 
-    # ------------------------------------------------------------------ enabledness and firing
+    # ------------------------------------------------------------------ firing
 
     def _room_downstream(self, stage: Stage[Any, Any]) -> bool:
         for (src, _label), dst in self.pipeline.edges.items():
@@ -232,6 +243,8 @@ class Engine:
         if not self._room_downstream(stage):
             return False
         if stage.mode == "read":
+            if stage.max_in_flight is not None and len(self._origin_alive.get(stage.name, ())) >= stage.max_in_flight:
+                return False
             item: WorkItem[Any] = WorkItem(payload=list(place))
             index = None
         else:
@@ -283,21 +296,12 @@ class Engine:
     def _take(
         self, stage: Stage[Any, Any], item: WorkItem[Any], demand: Mapping[str, float]
     ) -> dict[str, float] | None:
-        """Take ``demand`` from the pools, serving held units first. All or nothing. ``None`` = not now."""
+        """Take ``demand`` from the resources. All or nothing. ``None`` = not now."""
         taken: dict[str, float] = {}
         for name, units in demand.items():
             if units <= 0:
                 continue
             need = units
-            if name in item.held and name not in stage.hold:
-                served = min(item.held[name], need)
-                item.held[name] -= served
-                if item.held[name] <= 0:
-                    del item.held[name]
-                need -= served
-            if need <= 0:
-                taken[name] = 0.0
-                continue
             resource = self.resources.get(name)
             if resource is None:
                 raise RuntimeError(f"stage {stage.name!r} demands unknown resource {name!r}")
@@ -368,16 +372,10 @@ class Engine:
         outputs = list(c.outputs or [])
         self.events.emit("complete", stage=stage.name, item=item.id, seconds=round(c.seconds, 4), outputs=len(outputs))
         if stage.mode == "read":
-            # The read item is synthetic: what it holds belongs to the items the body created.
+            # The read item is synthetic; each item the body returned starts a lineage from this stage.
             for out in outputs:
-                self._register_new(out, parent=None)
-            if outputs:
-                keep = stage.carry(item, outputs)
-                target = outputs[keep] if keep is not None and 0 <= keep < len(outputs) else outputs[0]
-                for name, units in item.held.items():
-                    target.held[name] = target.held.get(name, 0.0) + units
-                item.held = {}
-            else:
+                self._register_new(out, parent=None, origin=stage.name)
+            if not outputs:
                 self._end_item(item, "nothing", log=False)
             for out in outputs:
                 self._route(stage, out)
@@ -390,16 +388,12 @@ class Engine:
         if continuing and not children:
             self._route(stage, item)
             return
-        # A fan-out (or a replacement): the input ends; children descend from it.
-        keep = stage.carry(item, outputs)
+        # A fan-out (or a replacement): the input ends; children descend from it and stay in its lineage.
         for out in outputs:
             if out is item:
                 continue
             self._register_new(out, parent=item)
             out.fanout = len(outputs)
-        if keep is not None and 0 <= keep < len(outputs) and outputs[keep] is not item:
-            outputs[keep].held = dict(item.held)
-            item.held = {}
         if continuing:
             self._route(stage, item)
         else:
@@ -410,12 +404,9 @@ class Engine:
     def _settle(
         self, stage: Stage[Any, Any], item: WorkItem[Any], taken: Mapping[str, float], used: Mapping[str, float]
     ) -> None:
-        """Put back demand minus used; keep held demands on the item."""
+        """Put back demand minus used."""
         for name, units in taken.items():
             if units <= 0:
-                continue
-            if name in stage.hold:
-                item.held[name] = item.held.get(name, 0.0) + units  # stays in flight until the item ends
                 continue
             u = float(used.get(name, 0.0))
             back = max(0.0, units - u)
@@ -423,9 +414,6 @@ class Engine:
             self.events.resource(name).put_back += back
             self.events.resource(name).used += min(u, units)
             self._in_flight_units[name] -= units
-
-    def _held_units(self, name: str, delta: float) -> None:
-        self._in_flight_units[name] = self._in_flight_units.get(name, 0.0) + delta
 
     def _route(self, stage: Stage[Any, Any], item: WorkItem[Any]) -> None:
         tag, item.tag = item.tag, None
@@ -455,7 +443,7 @@ class Engine:
 
     def topology(self) -> dict[str, Any]:
         """The pipeline as drawn: stages in declaration order with their place mode, body kind, widths, nominal
-        demand and holds; the labelled edges; the resources with their caps. Static for the run."""
+        demand and in-flight cap; the labelled edges; the resources with their caps. Static for the run."""
         stages = []
         for name, stage in self.pipeline.stages.items():
             stages.append(
@@ -468,7 +456,7 @@ class Engine:
                     "max_queue": stage.max_queue,
                     "bandwidth": stage.bandwidth,
                     "demand": dict(stage.nominal_demand),
-                    "hold": sorted(stage.hold),
+                    "max_in_flight": stage.max_in_flight,
                 }
             )
         edges = [{"src": src, "dst": dst, "label": label} for (src, label), dst in self.pipeline.edges.items()]
@@ -500,6 +488,7 @@ class Engine:
                 "in_flight": self.inflight[name],
                 "workers": stage.max_workers,
                 "completed": self.counters[name],
+                "lineages": len(self._origin_alive.get(name, ())) if stage.mode == "read" else None,
             }
         resources = {}
         for name, r in self.resources.items():
@@ -548,16 +537,21 @@ class Engine:
         self._register_new(item, parent)
         return item
 
-    def _register_new(self, item: WorkItem[Any], parent: WorkItem[Any] | None) -> None:
+    def _register_new(self, item: WorkItem[Any], parent: WorkItem[Any] | None, origin: str | None = None) -> None:
         item.id = self._next_id
         self._next_id += 1
         if parent is None:
             item.parent_id = None
             item.stamps = dict(self.counters)
+            item.origin, item.lineage = origin, item.id
         else:
             item.parent_id = parent.id
             item.stamps = dict(parent.stamps)
             item.created_at = parent.created_at
+            item.origin, item.lineage = parent.origin, parent.lineage
+        if item.origin is not None:
+            self._lineage_alive[item.lineage] = self._lineage_alive.get(item.lineage, 0) + 1
+            self._origin_alive.setdefault(item.origin, set()).add(item.lineage)
         self.events.emit("item", item=item.id, parent=item.parent_id)
 
     def _end_item_at(self, stage: Stage[Any, Any], item: WorkItem[Any], outcome: str, **fields: Any) -> None:
@@ -568,17 +562,17 @@ class Engine:
                 if it is item:
                     del place[i]
                     break
-        for name in item.held:
-            self.events.stranded[name] = self.events.stranded.get(name, 0.0)
         self._terminals[(stage.name, outcome)] += 1
         self._end_item(item, outcome, **fields)
 
     def _end_item(self, item: WorkItem[Any], outcome: str, log: bool = True, **fields: Any) -> None:
-        for name, units in list(item.held.items()):
-            self.resources[name].put(units)
-            self.events.resource(name).put_back += units
-            self._held_units(name, -units)
-        item.held = {}
+        if item.origin is not None and item.lineage in self._lineage_alive:
+            left = self._lineage_alive[item.lineage] - 1
+            if left > 0:
+                self._lineage_alive[item.lineage] = left
+            else:
+                del self._lineage_alive[item.lineage]
+                self._origin_alive.get(item.origin, set()).discard(item.lineage)
         item.outcome = outcome
         if log:
             self.events.outcomes[outcome] += 1

@@ -11,7 +11,7 @@ from typing import Any
 
 from gepa.async_stages.pipeline import Pipeline
 from gepa.async_stages.pipelines.reflective import split_entry
-from gepa.async_stages.pipelines.resources import ProposalsInFlight, ReflectionLM
+from gepa.async_stages.pipelines.resources import ReflectionLM
 from gepa.async_stages.pipelines.stages import Commit, Deps, Gate, Screen, StalenessGuard, Validate, validate_select
 from gepa.async_stages.pipelines.stages.multi import Generate, Reflect, RolloutMulti, SampleMulti
 
@@ -29,8 +29,7 @@ def build(
         return kw
 
     sample_kw = o("sample")
-    sample_kw.setdefault("demand", {"proposals_in_flight": 1})
-    sample_kw.setdefault("hold", ["proposals_in_flight"])
+    sample_kw.setdefault("max_in_flight", 8)  # lineages alive from the sample stage: proposals between draw and end
     shape = {
         "parents": sample_kw.get("parents", 1),
         "minibatches": sample_kw.get("minibatches", 1),
@@ -48,10 +47,7 @@ def build(
     validate = Validate(deps, select=validate_select(select) if isinstance(select, str) else select, **validate_kw)
     commit = Commit(deps, **o("commit"))
 
-    pipeline = Pipeline().resource(
-        ReflectionLM(**resource_opts.get("reflection_lm", {})),
-        ProposalsInFlight(**resource_opts.get("proposals_in_flight", {})),
-    )
+    pipeline = Pipeline().resource(ReflectionLM(**resource_opts.get("reflection_lm", {})))
     chain = [sample, rollout, reflect, generate]
     if guard is not None:
         chain.append(guard)

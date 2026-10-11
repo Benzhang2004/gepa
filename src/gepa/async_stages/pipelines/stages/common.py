@@ -72,6 +72,8 @@ class Deps:
     run_dir: str | None
     seed_candidate: dict[str, str]
     request_stop: Callable[[str], None]
+    #: the evaluator's cap, so no stage declares more concurrent evaluations than can ever be granted
+    evaluator_cap: int | None = None
     #: per-stage completion counters, set by the backend from the engine (the staleness guard reads them)
     counters: Mapping[str, int] = field(default_factory=dict)
     #: Reflection-LM calls completed so far, shared by every LM stage so the metered total can be split per call.

@@ -25,7 +25,7 @@ from gepa.async_stages import (
     WorkerStage,
     WorkItem,
 )
-from gepa.async_stages.pipelines.resources import ProposalsInFlight, ReflectionLM
+from gepa.async_stages.pipelines.resources import ReflectionLM
 from gepa.async_stages.resources import Evaluator, Usd
 
 
@@ -59,7 +59,7 @@ class Evaluate(WorkerStage[Toy, Toy]):
     in_type = out_type = Toy
 
     def __init__(self, cost: int = 2, delay: float = 0.0, fail_on: set[float] = frozenset(), **kw):
-        super().__init__("evaluate", bandwidth="evaluator", **kw)
+        super().__init__("evaluate", bandwidth="evaluator", demand={"evals": cost, "evaluator": cost}, **kw)
         self.cost = cost
         self.delay = delay
         self.fail_on = fail_on
@@ -135,17 +135,13 @@ class Slots(Evaluator):
 
 
 def build(*, evals: int, evaluator: int, in_flight: int = 2, accept_if=lambda t: True, stop_at=None, **eval_kw):
-    source = Source(demand={"in_flight": 1}, hold=["in_flight"])
+    source = Source(max_in_flight=in_flight)
     evaluate = Evaluate(workers=4, **eval_kw)
     ref: dict = {}
     gate = Gate(accept_if)
     commit = Commit(stop_at=stop_at, engine_ref=ref)
     pipeline = Pipeline().chain(source, evaluate, gate).edge(gate, commit, "accepted").edge(commit, source)
-    resources = {
-        "evals": Budget(evals, name="evals"),
-        "evaluator": Slots(evaluator),
-        "in_flight": Slots(in_flight, name="in_flight"),
-    }
+    resources = {"evals": Budget(evals, name="evals"), "evaluator": Slots(evaluator)}
     engine = Engine(pipeline, resources, executors={"evaluator": evaluator}, write_event_log=False)
     ref["engine"] = engine
     seed = engine.inject("source", Toy(parent=0, value=0.0, score=0.0))
@@ -172,9 +168,9 @@ def test_budget_drains_then_the_run_stops_exhausted():
     assert commit.commits == 5
     assert resources["evals"].available == 0
     assert_settled(engine, resources)
-    # The refused item ended with outcome budget and its held unit came back.
+    # The refused item ended with outcome budget and its lineage is no longer counted against the source.
     assert stats["outcomes"].get("budget", 0) >= 1
-    assert resources["in_flight"].available == 2
+    assert engine._origin_alive.get("source", set()) == set()
 
 
 def test_bandwidth_at_its_cap_is_not_exhaustion():
@@ -185,17 +181,27 @@ def test_bandwidth_at_its_cap_is_not_exhaustion():
     assert_settled(engine, resources)
 
 
-def test_held_units_pace_the_source():
+def test_a_demand_above_a_cap_is_refused_before_the_run():
+    engine, *_ = build(evals=12, evaluator=1)  # evaluate demands 2 evaluator units
+    with pytest.raises(PipelineError, match="demands 2 of 'evaluator', whose cap is 1"):
+        engine.run()
+    with pytest.raises(ResourceExhaustedError):
+        Evaluator(1).take(2)
+
+
+def test_the_in_flight_cap_paces_the_source():
     engine, source, evaluate, gate, commit, resources = build(evals=40, evaluator=8, in_flight=1, delay=0.01)
-    engine.run()
-    # One proposal alive at a time: every draw but the last (refused by the budget) reached a commit, and the
+    stats = engine.run()
+    # One lineage alive at a time: every draw but the last (refused by the budget) reached a commit, and the
     # source never ran ahead of the loop.
     assert source.draws == commit.commits + 1
     assert evaluate.peak == 1
+    assert 0 < stats["stages"]["source"]["mean_lineages_in_flight"] <= 1
+    assert engine._origin_alive.get("source", set()) == set()
     assert_settled(engine, resources)
 
 
-def test_rejected_items_end_and_release_their_hold():
+def test_rejected_items_end_and_free_their_slot():
     engine, source, evaluate, gate, commit, resources = build(
         evals=20, evaluator=8, in_flight=3, accept_if=lambda t: t.value % 2 == 0
     )
@@ -224,7 +230,7 @@ def test_worker_error_is_fatal_by_default_and_settles():
 
 
 def test_worker_error_is_isolated_when_not_raising():
-    source = Source(demand={"in_flight": 1}, hold=["in_flight"])
+    source = Source(max_in_flight=2)
     evaluate = Evaluate(workers=2, fail_on={2.0})
     gate = Gate(lambda t: True)
     commit = Commit()
@@ -269,16 +275,16 @@ def test_shipped_resource_semantics():
         usd.take(1)
     assert Usd(None).take(50) == 50  # unbounded
     ev = Evaluator(2)
-    assert ev.take(5) == 2  # a demand above the cap takes the whole cap and serializes inside
+    with pytest.raises(ResourceExhaustedError):
+        ev.take(5)  # a demand above the cap can never be met
+    assert ev.take(2) == 2
     assert ev.take(1) == 0  # rented, so never exhausted: the units out come back
     ev.put(2)
     assert ev.take(1) == 1
     lm = ReflectionLM(cap=1, name="generate_lm")
     assert lm.name == "generate_lm" and lm.take(1) == 1 and lm.take(1) == 0
-    alive = ProposalsInFlight(cap=1)
-    assert alive.take(1) == 1 and alive.take(1) == 0
-    alive.put(1)
-    assert alive.take(1) == 1
+    with pytest.raises(ResourceExhaustedError):
+        Usd(3.0).take(4)
 
 
 def test_pipeline_declares_its_resources():
@@ -315,22 +321,22 @@ def test_status_snapshot_and_topology(tmp_path):
     """The engine writes a live snapshot beside the event log, and the run_start event carries the topology."""
     import json
 
-    source = Source(demand={"in_flight": 1}, hold=["in_flight"])
+    source = Source(max_in_flight=2)
     evaluate = Evaluate(workers=4)
     gate = Gate(lambda t: t.value >= 0)
     commit = Commit()
     pipeline = Pipeline().chain(source, evaluate, gate).edge(gate, commit, "accepted").edge(commit, source)
-    resources = {"evals": Budget(12, name="evals"), "evaluator": Slots(4), "in_flight": Slots(2, name="in_flight")}
+    resources = {"evals": Budget(12, name="evals"), "evaluator": Slots(4)}
     engine = Engine(pipeline, resources, executors={"evaluator": 4}, run_dir=str(tmp_path), status_every=0.0)
     engine.inject("source", Toy(parent=0, value=0.0, score=0.0))
     engine.run()
 
     topo = engine.topology()
     assert [s["name"] for s in topo["stages"]] == ["source", "evaluate", "gate", "commit"]
-    assert topo["stages"][0]["mode"] == "read" and topo["stages"][0]["hold"] == ["in_flight"]
+    assert topo["stages"][0]["mode"] == "read" and topo["stages"][0]["max_in_flight"] == 2
     assert topo["stages"][1]["kind"] == "worker" and topo["stages"][1]["workers"] == 4
     assert {"src": "gate", "dst": "commit", "label": "accepted"} in topo["edges"]
-    assert topo["resources"]["in_flight"]["cap"] == 2
+    assert topo["resources"]["evaluator"]["cap"] == 4
 
     snap = json.loads((tmp_path / "async_status.json").read_text())
     assert snap["stop_reason"] == "exhausted"
@@ -341,6 +347,7 @@ def test_status_snapshot_and_topology(tmp_path):
     assert all(s["in_flight"] == 0 for s in snap["stages"].values())
     assert all(snap["stages"][st["name"]]["waiting"] == 0 for st in topo["stages"] if st["mode"] == "consume")
     assert snap["stages"]["source"]["waiting"] >= 1  # a read place keeps its content: the pool
+    assert snap["stages"]["source"]["lineages"] == 0 and snap["stages"]["evaluate"]["lineages"] is None
 
     first = json.loads((tmp_path / "async_events.jsonl").read_text().splitlines()[0])
     assert first["kind"] in ("run_start", "item")

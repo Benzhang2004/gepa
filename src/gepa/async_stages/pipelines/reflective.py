@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from gepa.async_stages.pipeline import Pipeline
-from gepa.async_stages.pipelines.resources import ProposalsInFlight, ReflectionLM
+from gepa.async_stages.pipelines.resources import ReflectionLM
 from gepa.async_stages.pipelines.stages import (
     Commit,
     Deps,
@@ -24,7 +24,7 @@ from gepa.async_stages.pipelines.stages import (
 )
 
 #: Keys the engine owns in a stage's config entry; everything else goes to the stage's constructor.
-SCHEDULING_KEYS = ("workers", "max_workers", "max_queue", "select", "demand", "hold")
+SCHEDULING_KEYS = ("workers", "max_workers", "max_queue", "max_in_flight", "select", "demand")
 
 
 def split_entry(entry: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -46,8 +46,7 @@ def build(
         return kw
 
     sample_kw = o("sample")
-    sample_kw.setdefault("demand", {"proposals_in_flight": 1})
-    sample_kw.setdefault("hold", ["proposals_in_flight"])
+    sample_kw.setdefault("max_in_flight", 8)  # lineages alive from the sample stage: proposals between draw and end
     sample = SampleParent(deps, **sample_kw)
     minibatch_size = sample_kw.get("minibatch_size", 3)
     rollout = Rollout(deps, minibatch_size=minibatch_size, **o("rollout"))
@@ -61,10 +60,7 @@ def build(
     validate = Validate(deps, select=validate_select(select) if isinstance(select, str) else select, **validate_kw)
     commit = Commit(deps, **o("commit"))
 
-    pipeline = Pipeline().resource(
-        ReflectionLM(**resource_opts.get("reflection_lm", {})),
-        ProposalsInFlight(**resource_opts.get("proposals_in_flight", {})),
-    )
+    pipeline = Pipeline().resource(ReflectionLM(**resource_opts.get("reflection_lm", {})))
     chain = [sample, rollout, propose]
     if guard is not None:
         chain.append(guard)

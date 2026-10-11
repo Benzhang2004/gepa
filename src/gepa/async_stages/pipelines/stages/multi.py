@@ -92,7 +92,8 @@ class RolloutMulti(WorkerStage[MultiProposal, MultiProposal]):
 
     def __init__(self, deps: Deps, *, parents: int = 1, minibatches: int = 1, minibatch_size: int = 3, **kw: Any):
         n = parents * minibatches * minibatch_size
-        kw.setdefault("demand", {"evaluator": n, "evals": n})
+        slots = n if deps.evaluator_cap is None else min(n, deps.evaluator_cap)
+        kw.setdefault("demand", {"evaluator": slots, "evals": n})
         super().__init__("rollout", bandwidth="evaluator", **kw)
         self.deps = deps
 

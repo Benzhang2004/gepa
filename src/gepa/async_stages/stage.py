@@ -35,8 +35,9 @@ SelectRule = Callable[[Sequence["WorkItem[Any]"]], "int | None"]
 class WorkItem(Generic[P]):
     """The only thing that travels between stages.
 
-    The engine reads ``id``, ``held`` and ``tag`` for its decisions, and writes ``parent_id``, ``fanout``,
-    ``stamps`` and ``outcome`` as bookkeeping for the pipeline and the event log. ``payload`` is the pipeline's.
+    The engine reads ``id`` and ``tag`` for its decisions, and writes ``parent_id``, ``fanout``, ``stamps``,
+    ``origin``, ``lineage`` and ``outcome`` as bookkeeping for the pipeline and the event log. ``payload`` is the
+    pipeline's.
     """
 
     payload: P
@@ -45,8 +46,10 @@ class WorkItem(Generic[P]):
     fanout: int = 1
     #: Per-stage completion counters at creation, inherited along the parent chain.
     stamps: dict[str, int] = field(default_factory=dict)
-    #: Units held on the item (a ``hold`` demand), by resource; served to later demands, put back when the item ends.
-    held: dict[str, float] = field(default_factory=dict)
+    #: The read stage whose firing created this item's lineage, and the id of the item that started it; a read
+    #: stage with ``max_in_flight`` counts the lineages alive from it.
+    origin: str | None = None
+    lineage: int = 0
     #: The label of the edge the item leaves its stage by; ``None`` takes the default edge.
     tag: str | None = None
     outcome: str | None = None
@@ -95,9 +98,9 @@ class Stage(Generic[In, Out]):
         workers: int = 1,
         max_workers: int | None = None,
         max_queue: int | None = None,
+        max_in_flight: int | None = None,
         bandwidth: str | None = None,
         demand: Mapping[str, float] | None = None,
-        hold: Sequence[str] = (),
     ):
         self.name = name
         self.mode: PlaceMode = mode
@@ -105,9 +108,11 @@ class Stage(Generic[In, Out]):
         self.workers = workers
         self.max_workers = max_workers if max_workers is not None else workers
         self.max_queue = max_queue
+        #: For a read stage: how many lineages it created may be alive at once (an item and its descendants,
+        #: until the last of them ends). ``None`` = unbounded.
+        self.max_in_flight = max_in_flight
         self.bandwidth = bandwidth
         self._demand = dict(demand or {})
-        self.hold: frozenset[str] = frozenset(hold)
 
     # -- what the engine asks ---------------------------------------------
 
@@ -133,13 +138,6 @@ class Stage(Generic[In, Out]):
         cache, counting evaluations on a shared state); it must stay cheap.
         """
         return
-
-    def carry(self, item: WorkItem[In], outputs: Sequence[WorkItem[Out]]) -> int | None:
-        """On a fan-out, the index of the returned item that keeps the input's held units; ``None`` puts them back.
-
-        A continuing item (the input returned as is) keeps its hold without asking.
-        """
-        return None
 
     def run(self, item: WorkItem[In]) -> list[WorkItem[Out]]:
         """The body. Returns 0 (drop), 1, or n (fan-out) items, each optionally tagged."""

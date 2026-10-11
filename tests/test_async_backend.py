@@ -40,7 +40,7 @@ def _run(tmp_path, *, max_evals: int, evals_mode: str = "bulk", in_flight: int =
     lm = _CountingLM()
     data = [f"ex{i}" for i in range(4)]
     stages = {
-        "sample": {"minibatch_size": 2},
+        "sample": {"minibatch_size": 2, "max_in_flight": in_flight},
         "rollout": {"workers": 2},
         "propose": {"workers": 2},
         "screen": {"workers": 2},
@@ -60,11 +60,7 @@ def _run(tmp_path, *, max_evals: int, evals_mode: str = "bulk", in_flight: int =
             run_dir=str(tmp_path / "run"),
             engine_config={
                 "reflection_lm": lm,
-                "resources": {
-                    "evals": {"mode": evals_mode},
-                    "reflection_lm": {"cap": 2},
-                    "proposals_in_flight": {"cap": in_flight},
-                },
+                "resources": {"evals": {"mode": evals_mode}, "reflection_lm": {"cap": 2}},
                 "stages": stages,
                 "write_event_log": True,
             },
@@ -152,9 +148,9 @@ def test_sibling_proposals_fans_out_one_generator_per_slot(tmp_path):
             engine_config={
                 "pipeline": "sibling_proposals",
                 "reflection_lm": lm,
-                "resources": {"reflection_lm": {"cap": 3}, "proposals_in_flight": {"cap": 1}},
+                "resources": {"reflection_lm": {"cap": 3}},
                 "stages": {
-                    "sample": {"parents": 1, "minibatches": 2, "minibatch_size": 2},
+                    "sample": {"parents": 1, "minibatches": 2, "minibatch_size": 2, "max_in_flight": 1},
                     "reflect": {"slots": 3},
                     "generate": {"workers": 3},
                     "screen": {"workers": 3},

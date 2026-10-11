@@ -21,9 +21,10 @@ class StageStats:
     busy_seconds: float = 0.0
     wait_seconds: float = 0.0
     max_queue_depth: int = 0
+    lineage_seconds: float = 0.0  # read stages: lineages alive from it, integrated over time
 
-    def as_dict(self) -> dict[str, Any]:
-        return {
+    def as_dict(self, wall: float = 0.0) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "fired": self.fired,
             "completed": self.completed,
             "failed": self.failed,
@@ -32,6 +33,9 @@ class StageStats:
             "mean_wait_seconds": round(self.wait_seconds / max(self.completed, 1), 4),
             "max_queue_depth": self.max_queue_depth,
         }
+        if self.lineage_seconds:
+            d["mean_lineages_in_flight"] = round(self.lineage_seconds / max(wall, 1e-9), 3)
+        return d
 
 
 @dataclass
@@ -65,7 +69,6 @@ class EventLog:
         self.outcomes: Counter[str] = Counter()
         self.gaps: dict[str, Counter[int]] = {}
         self.stop_reason: str | None = None
-        self.stranded: dict[str, float] = {}
         self._last_tick = self._t0
         self._inflight_seconds = 0.0
 
@@ -78,13 +81,20 @@ class EventLog:
     def resource(self, name: str) -> ResourceStats:
         return self.resources.setdefault(name, ResourceStats())
 
-    def tick(self, inflight_by_stage: dict[str, int], inflight_by_resource: dict[str, float]) -> None:
+    def tick(
+        self,
+        inflight_by_stage: dict[str, int],
+        inflight_by_resource: dict[str, float],
+        lineages_by_stage: dict[str, int] | None = None,
+    ) -> None:
         t = time.monotonic()
         dt = t - self._last_tick
         self._last_tick = t
         self._inflight_seconds += dt * sum(inflight_by_stage.values())
         for name, n in inflight_by_resource.items():
             self.resource(name)._busy_seconds += dt * n
+        for name, n in (lineages_by_stage or {}).items():
+            self.stage(name).lineage_seconds += dt * n
 
     def emit(self, kind: str, **fields: Any) -> None:
         if self._fh is None:
@@ -105,7 +115,6 @@ class EventLog:
             "mean_items_in_flight": round(self._inflight_seconds / wall, 3),
             "outcomes": dict(self.outcomes),
             "gaps": {stage: {str(k): v for k, v in sorted(c.items())} for stage, c in self.gaps.items()},
-            "stranded": dict(self.stranded),
-            "stages": {name: s.as_dict() for name, s in self.stages.items()},
+            "stages": {name: s.as_dict(wall) for name, s in self.stages.items()},
             "resources": {name: r.as_dict(wall) for name, r in self.resources.items()},
         }

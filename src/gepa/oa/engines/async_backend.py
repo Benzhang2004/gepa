@@ -7,9 +7,10 @@
   come from optimize_anything: ``evals`` (``{"mode": "bulk" | "passthrough", "cap": n}``; the server's budget
   tracker), ``evaluator`` (``{"cap": n}``, at most the server's ``max_concurrency``) and ``usd`` (``{"cap": n}``,
   default ``max_token_cost``). Every other entry configures a resource the chosen pipeline declares
-  (``reflection_lm`` and ``proposals_in_flight`` in the shipped ones, each ``{"cap": n}``).
+  (``reflection_lm`` in the shipped ones, ``{"cap": n}``). A stage may not demand more of a resource than its cap.
 - ``stages``: one entry per stage of the pipeline: the engine's scheduling keys (``workers``, ``max_workers``,
-  ``max_queue``, ``select``, ``demand``, ``hold``) and the stage's own constructor options.
+  ``max_queue``, ``max_in_flight`` for a read stage, ``select``, ``demand``) and the stage's own constructor
+  options. The shipped pipelines bound proposals alive with ``{"sample": {"max_in_flight": n}}`` (default 8).
 - ``reflection_lm``: a model name or a callable; ``seed``; ``write_event_log``; ``isolate_errors``;
   ``cache_evaluation`` (default True: a GEPAState evaluation cache, so demands are cache misses).
 """
@@ -141,6 +142,10 @@ class AsyncBackend:
             sequential_evals=self.sequential_evals,
             lm_cost_source=cost_source,
             cache_evaluation=self.cache_evaluation,
+            evaluator_cap=min(
+                server.max_concurrency,
+                int(self.resources_cfg.get("evaluator", {}).get("cap", server.max_concurrency)),
+            ),
             objective=task.objective or "",
             background=task.background or "",
         )

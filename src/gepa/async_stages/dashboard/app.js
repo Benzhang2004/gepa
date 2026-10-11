@@ -131,7 +131,7 @@ if (typeof document !== "undefined") (function () {
     svg += `<rect x="60" y="${yRes - 42}" width="${W - 120}" height="84" rx="8" fill="none" stroke="var(--line)" stroke-dasharray="5 4"/>`;
     svg += `<text x="${W - 70}" y="${yRes + 36}" text-anchor="end" class="ts">engine resources</text>`;
     // demand lines (behind everything)
-    for (const st of topo.stages) for (const r of [...Object.keys(st.demand || {}), ...(st.hold || [])]) {
+    for (const st of topo.stages) for (const r of Object.keys(st.demand || {})) {
       if (!resPos[r]) continue; const c = center(st.name), p = resPos[r];
       svg += `<line x1="${c.x}" y1="${pos[st.name].row === "top" ? pos[st.name].y + H : pos[st.name].y}" x2="${p.x}" y2="${p.y + (pos[st.name].row === "top" ? -24 : 24)}" class="demand"/>`;
     }
@@ -184,7 +184,8 @@ if (typeof document !== "undefined") (function () {
       svg += `<rect x="${p.x + PW}" y="${p.y}" width="${BW}" height="${H}" class="body" fill="${bodyFill}"/>`;
       if (workers) { const bw = Math.min(1, s.in_flight / workers) * (BW - 4); svg += `<rect x="${p.x + PW + 2}" y="${p.y + H - 6}" width="${bw}" height="4" class="fill"/>`; }
       svg += `<text x="${p.x + PW + BW / 2}" y="${p.y + 18}" text-anchor="middle" class="t">${st.name}</text>`;
-      svg += `<text x="${p.x + PW + BW / 2}" y="${p.y + 33}" text-anchor="middle" class="tm">${s.in_flight}${workers ? " / " + workers : ""} running</text>`;
+      if (isPool && s.lineages != null) svg += `<text x="${p.x + PW + BW / 2}" y="${p.y + 33}" text-anchor="middle" class="tm">${s.lineages}${st.max_in_flight ? " / " + st.max_in_flight : ""} in flight</text>`;
+      else svg += `<text x="${p.x + PW + BW / 2}" y="${p.y + 33}" text-anchor="middle" class="tm">${s.in_flight}${workers ? " / " + workers : ""} running</text>`;
       svg += `<text x="${p.x + PW / 2}" y="${p.row === "top" ? p.y - 6 : p.y + H + 14}" text-anchor="middle" class="ts">${isPool ? "pool" : "queue"}</text>`;
       svg += `</g>`;
     }

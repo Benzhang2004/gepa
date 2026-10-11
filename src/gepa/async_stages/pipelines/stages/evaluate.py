@@ -71,6 +71,12 @@ def _put_cache(deps: Deps, candidate: dict[str, str], ids: list[Any], batch: Eva
     state.evaluation_cache.put_batch(candidate, ids, batch.outputs, batch.scores, obj, split=split)
 
 
+def _slots(deps: Deps, n: int) -> int:
+    """Concurrent evaluation slots to demand for ``n`` examples: never more than the evaluator's cap, since a
+    demand above a cap is never granted; the server serializes a larger batch inside the slots it gets."""
+    return n if deps.evaluator_cap is None else min(n, deps.evaluator_cap)
+
+
 class _MinibatchEval(WorkerStage[Proposal, Proposal]):
     """Shared shape of rollout and screen: evaluate one candidate on the minibatch, cache misses only."""
 
@@ -79,7 +85,7 @@ class _MinibatchEval(WorkerStage[Proposal, Proposal]):
 
     def __init__(self, name: str, deps: Deps, *, minibatch_size: int = 3, **kw: Any):
         # Nominal cost, constant per stage: the minibatch. Cache hits come back as unused at completion.
-        kw.setdefault("demand", {"evaluator": minibatch_size, "evals": minibatch_size})
+        kw.setdefault("demand", {"evaluator": _slots(deps, minibatch_size), "evals": minibatch_size})
         super().__init__(name, bandwidth="evaluator", **kw)
         self.deps = deps
 
@@ -159,7 +165,7 @@ class Validate(WorkerStage[Proposal, Proposal]):
 
     def __init__(self, deps: Deps, **kw: Any):
         n = len(deps.valset)  # nominal cost: the whole valset; cache hits come back as unused at completion
-        kw.setdefault("demand", {"evaluator": n, "evals": n})
+        kw.setdefault("demand", {"evaluator": _slots(deps, n), "evals": n})
         super().__init__("validate", bandwidth="evaluator", **kw)
         self.deps = deps
 

@@ -52,8 +52,7 @@ def _run(engine: str, tmp_path, max_evals: int):
             "seed": 0,
             "cache_evaluation": False,
             "frontier_type": "instance",
-            "resources": {"proposals_in_flight": {"cap": 1}},
-            "stages": {"sample": {"minibatch_size": 2}},
+            "stages": {"sample": {"minibatch_size": 2, "max_in_flight": 1}},
             "write_event_log": False,
         }
     result = optimize_anything(
@@ -62,7 +61,11 @@ def _run(engine: str, tmp_path, max_evals: int):
         dataset=data,
         valset=data,
         config=OptimizeAnythingConfig(
-            engine=engine, max_evals=max_evals, max_concurrency=1, run_dir=str(tmp_path / engine), engine_config=engine_config
+            engine=engine,
+            max_evals=max_evals,
+            max_concurrency=1,
+            run_dir=str(tmp_path / engine),
+            engine_config=engine_config,
         ),
     )
     return result, lm
