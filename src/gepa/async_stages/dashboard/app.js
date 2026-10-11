@@ -138,7 +138,7 @@ if (typeof document !== "undefined") (function () {
     const edgeStats = snap.edges || {};
     const statFor = (src, dst, label) => edgeStats[`${src}->${dst}` + (label ? ":" + label : "")] || Object.values(edgeStats).find(e => e.src === src && e.dst === dst) || { count: 0, per_min: 0 };
     const idx = Object.fromEntries(order.map((s, i) => [s, i]));
-    const lab = (st, e) => `${fmt(st.per_min, 0)}/min, ${st.count} total`;
+    const lab = (st, e) => `${fmt(st.per_min, 0)}/min   ${st.count} total`;
     const tag = (e, x, y, anchor = "middle") => (e.label ? `<text x="${x}" y="${y}" text-anchor="${anchor}" class="ts">${e.label}</text>` : "");
     for (const e of topo.edges) {
       if (!(e.src in pos) || !(e.dst in pos)) continue;
@@ -146,19 +146,19 @@ if (typeof document !== "undefined") (function () {
       const a = pos[e.src], b = pos[e.dst];
       const aR = a.x + PW + BW, ay = a.y + H / 2, by = b.y + H / 2;
       if (idx[e.dst] === idx[e.src] + 1 && a.row === b.row && a.row === "top") {
-        svg += `<line x1="${aR}" y1="${ay}" x2="${b.x - 2}" y2="${by}" class="edge${hot}" marker-end="url(#ah)"/><text x="${aR + GAP / 2}" y="${ay - 8}" text-anchor="middle" class="tm">${lab(st, e)}</text>` + tag(e, aR + GAP / 2, ay + 18);
+        svg += `<line x1="${aR}" y1="${ay}" x2="${b.x - 2}" y2="${by}" class="edge${hot}" marker-end="url(#ah)"/><text x="${aR + GAP / 2}" y="${ay - 8}" text-anchor="middle" class="tm" xml:space="preserve">${lab(st, e)}</text>` + tag(e, aR + GAP / 2, ay + 18);
       } else if (idx[e.dst] === idx[e.src] + 1 && a.row === b.row) {
         const bR = b.x + PW + BW;
-        svg += `<line x1="${a.x}" y1="${ay}" x2="${bR + 2}" y2="${by}" class="edge${hot}" marker-end="url(#ah)"/><text x="${bR + GAP / 2}" y="${ay - 8}" text-anchor="middle" class="tm">${lab(st, e)}</text>` + tag(e, bR + GAP / 2, ay + 18);
+        svg += `<line x1="${a.x}" y1="${ay}" x2="${bR + 2}" y2="${by}" class="edge${hot}" marker-end="url(#ah)"/><text x="${bR + GAP / 2}" y="${ay - 8}" text-anchor="middle" class="tm" xml:space="preserve">${lab(st, e)}</text>` + tag(e, bR + GAP / 2, ay + 18);
       } else if (idx[e.dst] === idx[e.src] + 1) { // top row end -> bottom row start, down the right side
         const xr = aR + 34;
-        svg += `<path d="M${aR},${ay} H${xr} V${by} H${b.x + PW + BW + 2}" class="edge${hot}" marker-end="url(#ah)"/><text x="${xr + 8}" y="${(ay + by) / 2 + 4}" class="tm">${lab(st, e)}</text>` + tag(e, xr + 8, (ay + by) / 2 + 20, "start");
+        svg += `<path d="M${aR},${ay} H${xr} V${by} H${b.x + PW + BW + 2}" class="edge${hot}" marker-end="url(#ah)"/><text x="${xr + 8}" y="${(ay + by) / 2 + 4}" class="tm" xml:space="preserve">${lab(st, e)}</text>` + tag(e, xr + 8, (ay + by) / 2 + 20, "start");
       } else if (idx[e.dst] <= idx[e.src]) { // the loop back, around the left side
         const xl = Math.min(a.x, b.x) - 44;
-        svg += `<path d="M${a.x},${ay} H${xl} V${by} H${b.x - 2}" class="edge${hot}" marker-end="url(#ah)"/><text x="${xl - 8}" y="${(ay + by) / 2 + 4}" text-anchor="end" class="tm">${lab(st, e)}</text>` + tag(e, xl - 8, (ay + by) / 2 + 20, "end");
+        svg += `<path d="M${a.x},${ay} H${xl} V${by} H${b.x - 2}" class="edge${hot}" marker-end="url(#ah)"/><text x="${xl - 8}" y="${(ay + by) / 2 + 4}" text-anchor="end" class="tm" xml:space="preserve">${lab(st, e)}</text>` + tag(e, xl - 8, (ay + by) / 2 + 20, "end");
       } else {
         const lift = a.row === "top" ? -44 : 44;
-        svg += `<path d="M${aR},${ay} C${aR},${ay + lift} ${b.x},${by + lift} ${b.x - 2},${by}" class="edge${hot}" marker-end="url(#ah)"/><text x="${(aR + b.x) / 2}" y="${ay + lift * 0.8}" text-anchor="middle" class="tm">${lab(st, e)}</text>` + tag(e, (aR + b.x) / 2, ay + lift * 0.8 + 14);
+        svg += `<path d="M${aR},${ay} C${aR},${ay + lift} ${b.x},${by + lift} ${b.x - 2},${by}" class="edge${hot}" marker-end="url(#ah)"/><text x="${(aR + b.x) / 2}" y="${ay + lift * 0.8}" text-anchor="middle" class="tm" xml:space="preserve">${lab(st, e)}</text>` + tag(e, (aR + b.x) / 2, ay + lift * 0.8 + 14);
       }
     }
     // terminals: where items end, above the top row and below the bottom row
@@ -271,7 +271,7 @@ if (typeof document !== "undefined") (function () {
       const r = await fetch("status.json", { cache: "no-store" }); if (!r.ok) throw new Error(r.status + " " + r.statusText);
       const snap = await r.json();
       if (!history.t.length || snap.t !== history.t[history.t.length - 1]) { history.t.push(snap.t); history.snaps.push(snap); if (history.t.length > 3000) { history.t.shift(); history.snaps.shift(); } }
-      render(snap, history); setStatus("live , snapshot at " + fmtMin(snap.t) + (snap.stop_reason ? " , run ended: " + snap.stop_reason : ""));
+      render(snap, history); setStatus("live   snapshot at " + fmtMin(snap.t) + (snap.stop_reason ? "   run ended: " + snap.stop_reason : ""));
     } catch (e) { setStatus("live: " + e.message + " (serve a run directory with python -m gepa.async_stages.dashboard, or switch to replay)"); }
   }
   function startLive() { stopTimers(); mode = "live"; $("scrubWrap").hidden = true; pollLive(); timer = setInterval(pollLive, Math.max(1, Number($("pollSec").value)) * 1000); }
@@ -284,7 +284,7 @@ if (typeof document !== "undefined") (function () {
     replayHist = { t: [], snaps: [] };
     for (let i = 0; i <= N; i++) { const t = wall * i / N; replayHist.t.push(t); replayHist.snaps.push(snapshotAt(replay, t)); }
     $("scrubWrap").hidden = false; $("scrub").value = 1000; showReplayAt(1);
-    setStatus("replay , " + replay.fires.length.toLocaleString() + " fires , " + fmtMin(wall) + (replay.topology.inferred ? " , topology inferred from the item flow (older log)" : ""));
+    setStatus("replay   " + replay.fires.length.toLocaleString() + " fires   " + fmtMin(wall) + (replay.topology.inferred ? "   topology inferred from the item flow (older log)" : ""));
   }
   function showReplayAt(frac) {
     const wall = replay.tEnd - replay.t0, t = wall * frac, snap = snapshotAt(replay, t);
