@@ -36,6 +36,8 @@ def main() -> None:
     ap.add_argument("--session-max-usd", type=float, default=8.0)
     ap.add_argument("--session-timeout", type=float, default=1800.0)
     ap.add_argument("--model", default=None)
+    ap.add_argument("--effort", default="high", help="reasoning effort for proposer sessions")
+    ap.add_argument("--meta-effort", default="medium", help="reasoning effort for the meta step")
     ap.add_argument("--keep-workspaces", action="store_true")
     a = ap.parse_args()
 
@@ -65,8 +67,13 @@ def main() -> None:
                     "directions": a.directions,
                     "dynamic": a.dynamic,
                     "meta_every": a.meta_every,
-                    "agent_options": {"max_usd": a.session_max_usd, "timeout": a.session_timeout, "model": a.model},
-                    "meta_options": {"max_usd": 1.0, "timeout": 600.0, "model": a.model},
+                    "agent_options": {
+                        "max_usd": a.session_max_usd,
+                        "timeout": a.session_timeout,
+                        "model": a.model,
+                        "effort": a.effort,
+                    },
+                    "meta_options": {"max_usd": 1.0, "timeout": 600.0, "model": a.model, "effort": a.meta_effort},
                     "keep_workspaces": a.keep_workspaces,
                 },
                 "resources": {"agent": {"cap": sessions}, "meta": {"cap": 1}},

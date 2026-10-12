@@ -55,6 +55,8 @@ class AgentOptions:
     max_usd: float = 8.0
     timeout: float = 1800.0
     model: str | None = None
+    #: Reasoning effort for the session (``claude --effort``); ``None`` leaves the CLI's default.
+    effort: str | None = "high"
     #: Tools the session may use; ``None`` = no tools at all (the meta step).
     allowed_tools: list[str] | None = None
     schema: dict[str, Any] | None = None
@@ -82,6 +84,8 @@ def run_claude(prompt: str, cwd: Path, opts: AgentOptions) -> AgentResult:
     cmd = ["claude", "-p", prompt, "--output-format", "json", "--max-budget-usd", str(opts.max_usd)]
     if opts.model:
         cmd += ["--model", opts.model]
+    if opts.effort:
+        cmd += ["--effort", opts.effort]
     if opts.schema is not None:
         cmd += ["--json-schema", json.dumps(opts.schema)]
     if opts.allowed_tools is None:
@@ -111,7 +115,11 @@ def run_claude(prompt: str, cwd: Path, opts: AgentOptions) -> AgentResult:
     result = d.get("result")
     error = None
     if d.get("is_error"):
-        error = result if isinstance(result, str) else json.dumps(result)
+        error = (
+            result
+            if isinstance(result, str)
+            else f"session ended in error without a result (stop={d.get('stop_reason')} usd={d.get('total_cost_usd')})"
+        )
     elif opts.schema is not None and not d.get("structured_output"):
         error = f"no structured output (stop={d.get('stop_reason')} usd={d.get('total_cost_usd')})"
     return AgentResult(
