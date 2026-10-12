@@ -92,7 +92,10 @@ def run_claude(prompt: str, cwd: Path, opts: AgentOptions) -> AgentResult:
     env.pop("CLAUDECODE", None)
     t0 = time.time()
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, cwd=str(cwd), timeout=opts.timeout, env=env)
+        # stdin closed: with a pipe or inherited descriptor on stdin, ``claude -p`` waits for it to end.
+        p = subprocess.run(
+            cmd, capture_output=True, text=True, cwd=str(cwd), timeout=opts.timeout, env=env, stdin=subprocess.DEVNULL
+        )
     except subprocess.TimeoutExpired:
         return AgentResult("", None, 0.0, 0, time.time() - t0, 0, "", f"agent timed out after {opts.timeout:.0f}s")
     secs = time.time() - t0
@@ -313,10 +316,15 @@ class AgentPropose(WorkerStage[Proposal, Proposal]):
         entry = self.deps.ledger.setdefault(self.name, _ledger_entry(self.direction))
         entry["sessions"] += 1
         entry["usd"] += float(item.usage.get("usd", 0.0))
+        meta = item.payload.proposal_meta
         if item.tag is None:
             entry["proposed"] += 1
         elif item.tag == "agent_error":
             entry["errors"] += 1
+        self.deps.logger.log(
+            f"{self.name}: session {item.tag or 'proposed'} after {meta.get('seconds')}s, {meta.get('turns')} turns, "
+            f"${float(meta.get('usd') or 0):.2f}" + (f"; error: {meta['error']}" if meta.get("error") else "")
+        )
 
 
 def _ledger_entry(direction: str) -> dict[str, Any]:
