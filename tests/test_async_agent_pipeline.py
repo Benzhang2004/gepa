@@ -77,9 +77,7 @@ def test_engine_adds_stages_and_edges_while_running(tmp_path):
     engine_ref: dict = {}
     source, work, grow, commit = Source(), Work(), Grow(engine_ref), CommitStage()
     pipeline = Pipeline().chain(source, work, grow, commit, source)
-    engine = Engine(
-        pipeline, {"usd": Usd(8)}, executors={"cpu": 1}, run_dir=str(tmp_path), raise_on_exception=True
-    )
+    engine = Engine(pipeline, {"usd": Usd(8)}, executors={"cpu": 1}, run_dir=str(tmp_path), raise_on_exception=True)
     engine_ref["engine"] = engine
     engine.inject("commit", 0)
     stats = engine.run()
@@ -118,7 +116,9 @@ def _fake_session_factory(log: list):
         value = int(re.search(r"value=(\d+)", target.read_text()).group(1))
         step = 2 if "double" in prompt else 1
         target.write_text(f"value={value + step}\n")
-        return AgentResult(text="done", structured=None, usd=1.0, tokens=1000, seconds=0.1, turns=3, model="fake", error=None)
+        return AgentResult(
+            text="done", structured=None, usd=1.0, tokens=1000, seconds=0.1, turns=3, model="fake", error=None
+        )
 
     return runner
 
@@ -169,7 +169,7 @@ def test_agent_pipeline_runs_sessions_and_commits_improvements(tmp_path):
                     "runner": _fake_session_factory(log),
                 },
                 "resources": {"agent": {"cap": 2}},
-                "stages": {"sample": {"max_in_flight": 2}},
+                "stages": {"sample": {"max_in_flight": 2}, "propose": {"workers": 2}},
             },
         ),
     )
@@ -218,9 +218,7 @@ def test_dynamic_agent_pipeline_adds_a_proposer_from_the_meta_step(tmp_path):
             },
         ),
     )
-    decisions = [
-        json.loads(line) for line in (tmp_path / "run" / "spawner_decisions.jsonl").read_text().splitlines()
-    ]
+    decisions = [json.loads(line) for line in (tmp_path / "run" / "spawner_decisions.jsonl").read_text().splitlines()]
     applied = [d["applied"] for d in decisions]
     assert applied[0] == "added propose_1"
     assert "propose_1 workers=2" in applied
