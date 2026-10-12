@@ -262,8 +262,10 @@ class AgentPropose(WorkerStage[Proposal, Proposal]):
             f"score reached so far across all sessions is {self._best()}.\n\n"
             f"YOUR DIRECTION: {direction}\n\n"
             f"FEEDBACK ON THE STARTING CANDIDATE:\n{self._feedback(p)}\n\n"
-            f"Edit `{self.task.editable}` in place. Keep it correct: a wrong answer scores nothing. Measure before you "
-            f"finish. Do not create other files that the candidate needs; only `{self.task.editable}` is kept."
+            f"Edit `{self.task.editable}` in place. Keep it correct: a wrong answer scores nothing. Work in small "
+            f"measured steps: make the first improvement early, measure it, keep the file in a working state after "
+            f"every step, since the file as it stands when the session ends (or times out) is what is kept. Do not "
+            f"create other files that the candidate needs; only `{self.task.editable}` is kept."
         )
 
     # -- the body -----------------------------------------------------------------------------------------
