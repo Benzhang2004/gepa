@@ -11,6 +11,10 @@ stage's own ``workers``.
 
 The engine knows nothing about candidates, lineage or data. It reads three fields of an item for its decisions
 (id, tag) and writes its bookkeeping (parent id, fan-out count, stamps, origin, lineage, outcome).
+
+The pipeline may change while the run is on: a head body (or a worker stage's ``after``, both on the engine thread)
+may add a stage, add an edge, resize a stage or retire one (:meth:`Engine.add_stage` and friends). Every such
+change is logged as a ``topology`` event and shows in the next status snapshot, so a dashboard follows it.
 """
 
 from __future__ import annotations
@@ -94,8 +98,11 @@ class Engine:
         self.counters: dict[str, int] = dict.fromkeys(pipeline.stages, 0)
         self.inflight: dict[str, int] = dict.fromkeys(pipeline.stages, 0)
         self._executors: dict[str, ThreadPoolExecutor] = {}
+        self._executor_sizes: dict[str, int] = {}
         for name, size in executors.items():
             self._executors[name] = ThreadPoolExecutor(max_workers=max(1, size), thread_name_prefix=f"async-{name}")
+            self._executor_sizes[name] = max(1, size)
+        self._retired_executors: list[ThreadPoolExecutor] = []
         self._completions: queue.Queue[_Completion] = queue.Queue()
         self._next_id = 1
         self._stop_requested = False
@@ -117,6 +124,73 @@ class Engine:
         item.tag = tag
         self._deliver(self.pipeline.stages[stage_name], item)
         return item
+
+    # ------------------------------------------------------------------ runtime mutation (engine thread only)
+
+    def add_stage(self, stage: Stage[Any, Any]) -> None:
+        """Add a stage while the run is on. Call from a head body or an ``after`` hook (the engine thread)."""
+        if stage.name in self.pipeline.stages:
+            raise PipelineError(f"a stage named {stage.name!r} already exists")
+        for res_name, units in stage.nominal_demand.items():
+            if res_name not in self.resources:
+                raise PipelineError(f"stage {stage.name!r} demands unknown resource {res_name!r}")
+            cap = getattr(self.resources[res_name], "cap", None)
+            if cap is not None and units > cap:
+                raise PipelineError(f"stage {stage.name!r} demands {units} of {res_name!r}, whose cap is {cap}")
+        self.pipeline.add(stage)
+        self.places[stage.name] = []
+        self.counters[stage.name] = 0
+        self.inflight[stage.name] = 0
+        if isinstance(stage, WorkerStage):
+            self._ensure_executor(stage.bandwidth or "", stage.max_workers)
+        self._topology_changed("add_stage", stage=stage.name)
+
+    def add_edge(self, src: str, dst: str, label: str | None = None) -> None:
+        """Join ``src``'s output (under ``label``, or the default edge) to ``dst``'s place, while the run is on."""
+        if src not in self.pipeline.stages or dst not in self.pipeline.stages:
+            raise PipelineError(f"edge {src!r} -> {dst!r} names a stage that does not exist")
+        self.pipeline.edge(self.pipeline.stages[src], self.pipeline.stages[dst], label)
+        self._topology_changed("add_edge", src=src, dst=dst, label=label)
+
+    def set_workers(self, name: str, workers: int) -> None:
+        """Resize a stage: how many of its bodies may run at once. ``0`` pauses it (its place keeps filling)."""
+        stage = self.pipeline.stages[name]
+        workers = max(0, int(workers))
+        stage.workers = workers
+        stage.max_workers = max(stage.max_workers, workers)
+        if isinstance(stage, WorkerStage):
+            self._ensure_executor(stage.bandwidth or "", stage.max_workers)
+        self._topology_changed("set_workers", stage=name, workers=workers)
+
+    def retire_stage(self, name: str) -> None:
+        """Stop a stage for good: no more firings, and the edges into it are dropped, so an item that would have
+        gone there ends as ``retired`` instead. What it has in flight completes and is routed normally."""
+        stage = self.pipeline.stages[name]
+        stage.workers = 0
+        for key, dst in list(self.pipeline.edges.items()):
+            if dst == name:
+                del self.pipeline.edges[key]
+        for leftover in list(self.places[name]):
+            self._end_item(leftover, "retired")
+        self.places[name].clear()
+        self._topology_changed("retire_stage", stage=name)
+
+    def _ensure_executor(self, bandwidth: str, workers: int) -> None:
+        """A thread pool for ``bandwidth`` at least ``workers`` wide. A pool cannot grow, so a wider one replaces it;
+        the old pool finishes what it holds (its futures still complete into the engine's queue)."""
+        current = self._executors.get(bandwidth)
+        size = max(1, int(workers))
+        if current is not None and self._executor_sizes.get(bandwidth, 0) >= size:
+            return
+        if current is not None:
+            current.shutdown(wait=False, cancel_futures=False)
+            self._retired_executors.append(current)
+        self._executors[bandwidth] = ThreadPoolExecutor(max_workers=size, thread_name_prefix=f"async-{bandwidth}")
+        self._executor_sizes[bandwidth] = size
+
+    def _topology_changed(self, change: str, **fields: Any) -> None:
+        self.events.emit("topology", change=change, topology=self.topology(), **fields)
+        self._write_status(force=True)
 
     def run(self) -> dict[str, Any]:
         self.pipeline.validate(shared=[n for n in self.resources if n not in self.pipeline.resources])
@@ -154,7 +228,7 @@ class Engine:
                 if not fired and busy:
                     self._wait_for_completion()
         finally:
-            for ex in self._executors.values():
+            for ex in [*self._executors.values(), *self._retired_executors]:
                 ex.shutdown(wait=True, cancel_futures=False)
             self._drain_completions(force=True)
             # Items still waiting in a consume place cannot run any more: end them.
@@ -444,7 +518,8 @@ class Engine:
 
     def topology(self) -> dict[str, Any]:
         """The pipeline as drawn: stages in declaration order with their place mode, body kind, widths, nominal
-        demand and in-flight cap; the labelled edges; the resources with their caps. Static for the run."""
+        demand and in-flight cap; the labelled edges; the resources with their caps. As it stands now: a run may add,
+        resize or retire stages (:meth:`add_stage`), and each change is logged as a ``topology`` event."""
         stages = []
         for name, stage in self.pipeline.stages.items():
             stages.append(

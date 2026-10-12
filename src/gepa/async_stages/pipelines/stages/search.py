@@ -216,6 +216,7 @@ class Gate(HeadStage[Proposal, Proposal]):
         else:
             self.deps.logger.log(f"New subsample score {after} is not better than old score {before}, skipping")
         item.tag = "accepted" if accepted else "rejected"
+        p.proposal_meta["verdict"] = item.tag  # for a stage after the gate: routing clears the tag
         return [item]
 
 

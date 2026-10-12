@@ -188,6 +188,7 @@ class AsyncBackend:
         )
         engine_ref["engine"] = engine
         deps.counters = engine.counters
+        deps.engine = engine
         # The seed's validation is an evaluation like any other: it enters at validate and commit seeds the pool.
         engine.inject("validate", Proposal(parent_idx=-1, parent=seed, child=seed, is_seed=True))
         if isinstance(logger, Logger):

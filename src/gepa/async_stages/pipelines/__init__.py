@@ -10,11 +10,12 @@ import importlib
 from collections.abc import Callable
 from typing import Any
 
-from gepa.async_stages.pipelines import reflective, sibling_proposals
+from gepa.async_stages.pipelines import agent, reflective, sibling_proposals
 
 PIPELINES: dict[str, Callable[..., Any]] = {
     "reflective": reflective.build,
     "sibling_proposals": sibling_proposals.build,
+    "agent": agent.build,
 }
 
 

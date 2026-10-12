@@ -89,6 +89,11 @@ class Deps:
     cache_evaluation: bool = True
     objective: str = ""
     background: str = ""
+    #: The engine, set by the backend once built, for stages that change the pipeline while it runs (the spawner).
+    engine: Any = None
+    #: Per-direction ledger the agent pipeline keeps: proposer stage name -> counts (proposed, accepted, committed)
+    #: and the scores it reached, for the digest the meta step reads.
+    ledger: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def to_server_candidate(self, candidate: dict[str, str]) -> Any:
         """A candidate as the eval server expects it: the bare text in str-candidate mode."""

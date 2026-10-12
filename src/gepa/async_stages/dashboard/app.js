@@ -25,6 +25,7 @@ function buildReplay(ev) {
     } else if (e.kind === "complete") { const f = open.get(e.stage + "|" + e.item); if (f) { f.t1 = e.t; open.delete(e.stage + "|" + e.item); } }
     else if (e.kind === "end") { m.ends.push(e); const it = m.items.get(e.item); if (it) it.end = e; }
     else if (e.kind === "stop") m.stop = e;
+    else if (e.kind === "topology") { m.topology = e.topology || m.topology; for (const st of (e.topology || {}).stages || []) if (!m.stages.includes(st.name)) m.stages.push(st.name); }
     m.tEnd = Math.max(m.tEnd, e.t || 0);
   }
   for (const f of m.fires) if (f.t1 == null) f.t1 = m.tEnd;
