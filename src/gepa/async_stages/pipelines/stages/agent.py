@@ -177,6 +177,8 @@ class AgentTask:
     feedback: Callable[[float, dict[str, Any]], str] | None = None
     #: Higher is better; how a score reads for the session (``"score"`` by default).
     score_name: str = "score"
+    #: Tools a proposer session may use for this task; ``None`` = :data:`DEFAULT_TOOLS`.
+    tools: list[str] | None = None
 
 
 def _default_feedback(score: float, info: Mapping[str, Any]) -> str:
@@ -216,9 +218,9 @@ class AgentPropose(WorkerStage[Proposal, Proposal]):
         self.task = task
         self.direction = direction
         self.runner = runner
-        self.options = options or AgentOptions(allowed_tools=list(DEFAULT_TOOLS))
+        self.options = options or AgentOptions()
         if self.options.allowed_tools is None:
-            self.options.allowed_tools = list(DEFAULT_TOOLS)
+            self.options.allowed_tools = list(task.tools or DEFAULT_TOOLS)
         self.keep_workspaces = keep_workspaces
         self.calls = 0
         self.usd = 0.0
