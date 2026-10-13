@@ -511,15 +511,21 @@ class Spawner(WorkerStage[Proposal, Proposal]):
                 "seed": scores[0] if scores else None,
                 "recent": [round(s, 6) for s in scores[-8:]],
             }
-        stages = {
-            name: {k: v for k, v in st.items() if k in ("waiting", "in_flight", "workers", "completed")}
-            for name, st in snap["stages"].items()
-        }
+        engine_stages = engine.pipeline.stages if engine is not None else {}
+        stages = {}
+        for name, st in snap["stages"].items():
+            stage = engine_stages.get(name)
+            if stage is not None and stage.mode == "read":
+                # A read place is a pool, not a queue: its size is content, never a backlog.
+                stages[name] = {"pool_size": st["waiting"], "in_flight": st["in_flight"], "completed": st["completed"]}
+            else:
+                stages[name] = {k: v for k, v in st.items() if k in ("waiting", "in_flight", "workers", "completed")}
         usd = snap["resources"].get("usd", {})
         lines = [
             f"TASK: {self.task.spec.strip()[:600]}",
             f"POOL: {json.dumps(pool)}",
-            f"STAGES (waiting / in flight / workers / completed): {json.dumps(stages)}",
+            "STAGES (consume stages: waiting = backlog, in flight, workers, completed; read stages: pool_size = "
+            f"candidates held, never a backlog): {json.dumps(stages)}",
             "FLOW (items per minute on each edge): " + json.dumps({k: v["per_min"] for k, v in snap["edges"].items()}),
             f"OUTCOMES: {json.dumps(snap['outcomes'])}",
             f"USD: used {usd.get('used', 0):.2f} of cap {usd.get('cap')}",
@@ -542,7 +548,8 @@ class Spawner(WorkerStage[Proposal, Proposal]):
             "dead, whether proposals pile up waiting for evaluation (then evaluation needs workers, not proposals), "
             "and whether a direction nobody is trying is likely to hold the next breakthrough.\n\n"
             "Actions: add_proposer (give `direction`: a concrete operation family for the sessions to pursue, one "
-            "sentence); set_workers (give `stage` and `workers`); set_weight (give `stage`, a proposer, and "
+            "sentence); set_workers (give `stage` and `workers`; only proposer and evaluation stages, those whose "
+            "bodies are sessions or evaluations, can be resized); set_weight (give `stage`, a proposer, and "
             "`weight` >= 0; 0 pauses it); retire (give `stage`, a proposer); none.\n\n"
             f"DIGEST:\n{self.digest()}\n"
         )
@@ -626,8 +633,9 @@ class Spawner(WorkerStage[Proposal, Proposal]):
         if action == "set_workers":
             n = int(m.get("workers", 1))
             n = max(0, min(n, self.max_workers_per_stage))
-            if stage_name in ("spawner", "tee", "route", "commit", "gate"):
-                return f"refused: {stage_name} is not resizable"
+            target = engine.pipeline.stages[stage_name]
+            if not isinstance(target, WorkerStage) or stage_name == "spawner":
+                return f"refused: {stage_name} is not resizable (only worker stages are)"
             engine.set_workers(stage_name, n)
             return f"{stage_name} workers={n}"
         if action == "set_weight":
