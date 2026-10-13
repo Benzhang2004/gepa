@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -303,3 +304,115 @@ def test_dynamic_agent_pipeline_adds_a_proposer_from_the_meta_step(tmp_path):
     events = [json.loads(line) for line in (tmp_path / "run" / "async_events.jsonl").read_text().splitlines()]
     assert any(e["kind"] == "topology" and e["change"] == "add_stage" for e in events)
     assert result.val_aggregate_scores[result.best_idx] >= 2
+
+
+# ------------------------------------------------------------------------------------------ decomposition
+
+
+def _fake_swarm_factory(log: list):
+    """One fake runner for every session kind: the study session writes BRIEF.md, the planner returns two
+    sub-tasks, and an implementer bumps the value (by 2 under the 'double' direction) and leaves NOTES.md."""
+
+    def runner(prompt: str, cwd: Path, opts: AgentOptions) -> AgentResult:
+        log.append({"prompt": prompt, "tools": opts.allowed_tools, "schema": opts.schema})
+        if "study step" in prompt:
+            (cwd / "BRIEF.md").write_text("# Brief\nThe value lives in candidate.txt; higher is better.\n")
+            return AgentResult("brief", None, 0.5, 100, 0.1, 2, "fake", None)
+        if "planning step" in prompt:
+            plan = {"subtasks": [{"direction": "double the step"}, {"direction": "add one"}]}
+            return AgentResult("", plan, 0.1, 50, 0.1, 1, "fake", None)
+        target = cwd / "candidate.txt"
+        value = int(re.search(r"value=(\d+)", target.read_text()).group(1))
+        step = 2 if "double" in prompt.split("YOUR DIRECTION:")[1].split("\n")[0] else 1
+        target.write_text(f"value={value + step}\n")
+        (cwd / "NOTES.md").write_text(f"bumped by {step}; next try a bigger step\n")
+        return AgentResult("done", None, 1.0, 1000, 0.1, 3, "fake", None)
+
+    return runner
+
+
+def test_decomposed_pipeline_shares_a_brief_and_notes_and_fans_out_plans(tmp_path):
+    from gepa.optimize_anything import optimize_anything
+
+    log: list = []
+    task = _task(tmp_path)
+    result = optimize_anything(
+        seed_candidate="value=0\n",
+        evaluator=_evaluator,
+        config=OptimizeAnythingConfig(
+            engine="async",
+            max_evals=40,
+            max_token_cost=10.0,
+            max_concurrency=2,
+            run_dir=str(tmp_path / "run"),
+            engine_config={
+                "pipeline": {
+                    "name": "agent",
+                    "task": task,
+                    "directions": [""],
+                    "brief": True,
+                    "plan": 2,
+                    "notes": 2,
+                    "runner": _fake_swarm_factory(log),
+                },
+                "resources": {"agent": {"cap": 2}},
+                "stages": {"sample": {"max_in_flight": 1}, "propose": {"workers": 2}},
+            },
+        ),
+    )
+    run = tmp_path / "run"
+    assert (run / "places" / "brief" / "BRIEF.md").read_text().startswith("# Brief")
+    brief_sessions = [t for t in log if "study step" in t["prompt"]]
+    assert len(brief_sessions) == 1 and "Write" in brief_sessions[0]["tools"]
+    plans = [t for t in log if "planning step" in t["prompt"]]
+    assert plans and all(t["tools"] is None and t["schema"] is not None for t in plans)
+    implementers = [t for t in log if "YOUR DIRECTION" in t["prompt"]]
+    directions = {t["prompt"].split("YOUR DIRECTION:")[1].split("\n")[0].strip() for t in implementers}
+    assert {"double the step", "add one"} <= directions  # the planner's sub-tasks became the sessions' directions
+    assert any("BRIEF (written once" in t["prompt"] for t in implementers)  # later sessions read the brief
+    notes = sorted((run / "places" / "notes").glob("*.md"))
+    assert notes and "bumped by" in notes[0].read_text()
+    assert any("NOTES LEFT BY EARLIER SESSIONS" in t["prompt"] for t in implementers)
+    events = [json.loads(line) for line in (run / "async_events.jsonl").read_text().splitlines()]
+    assert any(e["kind"] == "complete" and e["stage"] == "plan" and e["outputs"] == 2 for e in events)  # fan-out
+    assert result.val_aggregate_scores[result.best_idx] >= 2
+
+
+def test_route_holds_items_until_a_proposer_has_capacity():
+    from gepa.async_stages.pipelines.stages.agent import Route
+    from gepa.async_stages.pipelines.stages.common import Deps, Proposal, StateBox
+
+    class FakeStage:
+        def __init__(self, workers):
+            self.workers = workers
+
+    class FakePipeline:
+        stages: ClassVar[dict] = {"propose_0": FakeStage(1), "propose_1": FakeStage(1)}
+
+    class FakeEngine:
+        pipeline: ClassVar[FakePipeline] = FakePipeline()
+        inflight: ClassVar[dict] = {"propose_0": 1, "propose_1": 0}
+        places: ClassVar[dict] = {"propose_0": [], "propose_1": []}
+
+    import random
+
+    deps = Deps(
+        box=StateBox(),
+        server=None,
+        adapter=None,
+        reflection_lm=None,
+        trainset=None,
+        valset=None,  # type: ignore[arg-type]
+        rng=random.Random(0),
+        logger=type("L", (), {"log": lambda self, m: None})(),
+        run_dir=None,
+        seed_candidate={},
+        request_stop=lambda r: None,
+    )
+    deps.engine = FakeEngine()
+    route = Route(deps, weights={"propose_0": 1.0, "propose_1": 1.0})
+    item: WorkItem[Proposal] = WorkItem(Proposal(parent_idx=0, parent={}))
+    assert route.select([item]) == 0  # propose_1 is free
+    assert route.run(item)[0].tag == "propose_1"  # never the busy one
+    FakeEngine.places["propose_1"].append(item)  # now something waits for propose_1 too
+    assert route.select([item]) is None  # hold the item in route's own place

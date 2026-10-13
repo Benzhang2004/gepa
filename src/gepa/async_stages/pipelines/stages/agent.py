@@ -20,7 +20,7 @@ import os
 import shutil
 import subprocess
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -218,6 +218,8 @@ class AgentPropose(WorkerStage[Proposal, Proposal]):
         options: AgentOptions | None = None,
         usd_first_guess: float = 4.0,
         keep_workspaces: bool = False,
+        places: Any = None,
+        notes_k: int = 3,
         **kw: Any,
     ):
         kw.setdefault("demand", {"agent": 1, "usd": usd_first_guess})
@@ -230,6 +232,9 @@ class AgentPropose(WorkerStage[Proposal, Proposal]):
         if self.options.allowed_tools is None:
             self.options.allowed_tools = list(task.tools or DEFAULT_TOOLS)
         self.keep_workspaces = keep_workspaces
+        #: The run's shared places (brief, notes), when the pipeline keeps them; see ``stages.decompose``.
+        self.places = places
+        self.notes_k = notes_k
         self.calls = 0
         self.usd = 0.0
 
@@ -260,22 +265,43 @@ class AgentPropose(WorkerStage[Proposal, Proposal]):
             return "unknown"
         return f"{max(state.program_full_scores_val_set):.6g}"
 
+    def direction_for(self, p: Proposal) -> str:
+        """A planned sub-task on the item wins over the stage's standing direction."""
+        planned = str(p.proposal_meta.get("direction", "")).strip() if p.proposal_meta.get("planned") else ""
+        return planned or self.direction.strip()
+
     def prompt(self, p: Proposal) -> str:
         parent_score = sum(p.parent_eval.scores) if p.parent_eval is not None else float("nan")
         direction = (
-            self.direction.strip() or "Improve the candidate in whatever way the feedback suggests is most promising."
+            self.direction_for(p) or "Improve the candidate in whatever way the feedback suggests is most promising."
         )
+        shared = ""
+        if self.places is not None:
+            brief = self.places.brief()
+            if brief:
+                shared += (
+                    "\n\nBRIEF (written once by a study session from the source; trust it and skip re-deriving it):\n"
+                    + brief[:8000]
+                )
+            notes = self.places.notes(self.notes_k)
+            if notes:
+                from gepa.async_stages.pipelines.stages.decompose import render_notes
+
+                shared += "\n\nNOTES LEFT BY EARLIER SESSIONS (newest first):\n" + render_notes(notes)
         return (
             f"{self.task.spec.strip()}\n\n"
             f"You are one of several independent sessions improving `{self.task.editable}` in this directory; you "
             f"start from a candidate that scores {parent_score:.6g} ({self.task.score_name}, higher is better). The best "
             f"score reached so far across all sessions is {self._best()}.\n\n"
             f"YOUR DIRECTION: {direction}\n\n"
-            f"FEEDBACK ON THE STARTING CANDIDATE:\n{self._feedback(p)}\n\n"
+            f"FEEDBACK ON THE STARTING CANDIDATE:\n{self._feedback(p)}"
+            f"{shared}\n\n"
             f"Edit `{self.task.editable}` in place. Keep it correct: a wrong answer scores nothing. Work in small "
             f"measured steps: make the first improvement early, measure it, keep the file in a working state after "
             f"every step, since the file as it stands when the session ends (or times out) is what is kept. Do not "
-            f"create other files that the candidate needs; only `{self.task.editable}` is kept."
+            f"create other files that the candidate needs; only `{self.task.editable}` is kept. Before you finish, "
+            f"write `NOTES.md` (under 40 lines) for the sessions after you: what you changed, what it measured, what "
+            f"you tried that did not pay, and what you would try next."
         )
 
     # -- the body -----------------------------------------------------------------------------------------
@@ -304,9 +330,12 @@ class AgentPropose(WorkerStage[Proposal, Proposal]):
         res = self.runner(prompt, ws, opts)
         item.usage = {"usd": res.usd}
         child_text = target.read_text() if target.exists() else parent_text
+        direction = self.direction_for(p)
+        planned = bool(p.proposal_meta.get("planned"))
         p.proposal_meta = {
             "stage": self.name,
-            "direction": self.direction,
+            "direction": direction,
+            "planned": planned,
             "usd": res.usd,
             "tokens": res.tokens,
             "seconds": round(res.seconds, 1),
@@ -314,6 +343,12 @@ class AgentPropose(WorkerStage[Proposal, Proposal]):
             "model": res.model,
             "error": res.error,
         }
+        notes = ws / "NOTES.md"
+        if self.places is not None and notes.exists() and notes.read_text().strip():
+            from gepa.async_stages.pipelines.stages.decompose import slug
+
+            head = f"# {self.name} item {item.id}" + (f", direction: {direction}" if direction else "") + "\n\n"
+            self.places.add_note(f"{self.name}-item{item.id}-{slug(direction)}", head + notes.read_text())
         if not self.keep_workspaces:
             shutil.rmtree(ws, ignore_errors=True)
         if res.error and child_text == parent_text:
@@ -362,17 +397,44 @@ def _ledger_entry(direction: str) -> dict[str, Any]:
 
 class Route(HeadStage[Proposal, Proposal]):
     """Spreads proposals across the live proposer stages by weight: tags each item with the proposer's name, which
-    is the label of the edge that leads there. The spawner edits ``weights`` as it adds or retires proposers."""
+    is the label of the edge that leads there. The spawner edits ``weights`` as it adds or retires proposers.
+
+    Capacity-aware: an item is only routed when some live proposer can take it now (a free worker and nothing
+    already waiting for it), and the draw is among those proposers. Otherwise the item waits here, in route's own
+    place, instead of queueing behind a busy proposer while another sits idle.
+    """
 
     in_type = out_type = Proposal
 
     def __init__(self, deps: Deps, *, weights: Mapping[str, float] | None = None, **kw: Any):
+        kw.setdefault("select", self._select)
         super().__init__("route", **kw)
         self.deps = deps
         self.weights: dict[str, float] = dict(weights or {})
 
-    def run(self, item: WorkItem[Proposal]) -> list[WorkItem[Proposal]]:
+    def _free(self) -> list[tuple[str, float]]:
+        """Live proposers that can take an item right now; every live one when the engine is not attached."""
+        engine = self.deps.engine
         live = [(name, w) for name, w in self.weights.items() if w > 0]
+        if engine is None:
+            return live
+        out = []
+        for name, w in live:
+            stage = engine.pipeline.stages.get(name)
+            if stage is None:
+                continue
+            busy = engine.inflight.get(name, 0) + len(engine.places.get(name, ()))
+            if busy < stage.workers:
+                out.append((name, w))
+        return out
+
+    def _select(self, items: Sequence[WorkItem[Any]]) -> int | None:
+        if not items:
+            return None
+        return 0 if self._free() or not any(w > 0 for w in self.weights.values()) else None
+
+    def run(self, item: WorkItem[Proposal]) -> list[WorkItem[Proposal]]:
+        live = self._free()
         if not live:
             item.tag = "no_proposer"
             return [item]
@@ -427,19 +489,30 @@ class Tee(HeadStage[Proposal, Proposal]):
 
     in_type = out_type = Proposal
 
-    def __init__(self, deps: Deps, *, every: int = 2, **kw: Any):
+    def __init__(self, deps: Deps, *, every: int = 2, brief: bool = False, **kw: Any):
         super().__init__("tee", **kw)
         self.deps = deps
         self.every = max(1, int(every))
+        #: Send a copy of the first commit (the seed) to the brief stage, once.
+        self.brief = brief
         self.seen = 0
 
     def run(self, item: WorkItem[Proposal]) -> list[WorkItem[Proposal]]:
         self.seen += 1
-        if self.seen % self.every != 0:
-            return [item]
-        meta: WorkItem[Proposal] = WorkItem(Proposal(parent_idx=item.payload.parent_idx, parent=item.payload.parent))
-        meta.tag = "meta"
-        return [item, meta]
+        out: list[WorkItem[Proposal]] = [item]
+        if self.brief and self.seen == 1:
+            study: WorkItem[Proposal] = WorkItem(
+                Proposal(parent_idx=item.payload.parent_idx, parent=item.payload.parent)
+            )
+            study.tag = "brief"
+            out.append(study)
+        if self.seen % self.every == 0:
+            meta: WorkItem[Proposal] = WorkItem(
+                Proposal(parent_idx=item.payload.parent_idx, parent=item.payload.parent)
+            )
+            meta.tag = "meta"
+            out.append(meta)
+        return out
 
 
 MANIFEST_SCHEMA: dict[str, Any] = {

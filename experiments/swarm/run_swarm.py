@@ -39,6 +39,9 @@ def main() -> None:
     ap.add_argument("--effort", default="high", help="reasoning effort for proposer sessions")
     ap.add_argument("--meta-effort", default="medium", help="reasoning effort for the meta step")
     ap.add_argument("--keep-workspaces", action="store_true")
+    ap.add_argument("--brief", action="store_true", help="one study session writes a brief every session reads")
+    ap.add_argument("--plan", type=int, default=0, help="planner fan-out: K sub-tasks per proposal (0 = off)")
+    ap.add_argument("--notes", type=int, default=3, help="recent session notes shown to each session")
     a = ap.parse_args()
 
     mod = importlib.import_module(f"experiments.swarm.tasks.{a.task}")
@@ -75,6 +78,11 @@ def main() -> None:
                     },
                     "meta_options": {"max_usd": 1.0, "timeout": 600.0, "model": a.model, "effort": a.meta_effort},
                     "keep_workspaces": a.keep_workspaces,
+                    "brief": a.brief,
+                    "brief_options": {"max_usd": 3.0, "timeout": 900.0, "model": a.model, "effort": a.effort},
+                    "plan": a.plan,
+                    "plan_options": {"max_usd": 1.0, "timeout": 600.0, "model": a.model, "effort": a.meta_effort},
+                    "notes": a.notes,
                 },
                 "resources": {"agent": {"cap": sessions}, "meta": {"cap": 1}},
                 "stages": {

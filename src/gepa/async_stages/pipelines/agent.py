@@ -44,6 +44,7 @@ from gepa.async_stages.pipelines.stages.agent import (
     Tee,
     run_claude,
 )
+from gepa.async_stages.pipelines.stages.decompose import Brief, Places, Planner
 
 
 def build(
@@ -64,6 +65,10 @@ def build(
     directions: list[str] = list(defaults.get("directions") or [""])
     runner = defaults.get("runner") or run_claude
     keep_workspaces = bool(defaults.get("keep_workspaces", False))
+
+    places = Places(deps.run_dir)
+    notes_k = int(defaults.get("notes", 3))
+    plan_k = int(defaults.get("plan") or 0)
 
     sample_kw = o("sample")
     sample_kw.setdefault("max_in_flight", 4)
@@ -90,6 +95,8 @@ def build(
             runner=runner,
             options=AgentOptions(**dict(defaults.get("agent_options") or {})),
             keep_workspaces=keep_workspaces,
+            places=places,
+            notes_k=notes_k,
             **kw,
         )
 
@@ -102,13 +109,29 @@ def build(
     validate = Validate(deps, select=validate_select(select) if isinstance(select, str) else select, **validate_kw)
     commit = Commit(deps, **o("commit"))
     commit_ledger = LedgerGate(deps, name="commit_ledger", what="commit")
-    tee = Tee(deps, every=int(defaults.get("meta_every", 2)))
+    tee = Tee(deps, every=int(defaults.get("meta_every", 2)), brief=bool(defaults.get("brief")))
 
     pipeline = Pipeline().resource(
         AgentSessions(**resource_opts.get("agent", {"cap": 3})),
         MetaSessions(**resource_opts.get("meta", {"cap": 1})),
     )
-    pipeline.chain(sample, rollout, route)
+    if plan_k:
+        meta_runner = defaults.get("meta_runner") or runner
+        plan_opts: dict[str, Any] = dict(defaults.get("plan_options") or {})
+        plan_opts.setdefault("max_usd", 1.0)
+        plan_opts.setdefault("timeout", 600.0)
+        planner = Planner(
+            deps, task, places, k=plan_k, runner=meta_runner, options=AgentOptions(**plan_opts), **o("plan")
+        )
+        pipeline.chain(sample, rollout, planner, route)
+    else:
+        pipeline.chain(sample, rollout, route)
+    if defaults.get("brief"):
+        brief_opts: dict[str, Any] = dict(defaults.get("brief_options") or {})
+        brief_opts.setdefault("max_usd", 3.0)
+        brief_opts.setdefault("timeout", 900.0)
+        brief = Brief(deps, task, places, runner=runner, options=AgentOptions(**brief_opts), **o("brief"))
+        pipeline.edge(tee, brief, "brief")
     for stage in proposers:
         pipeline.edge(route, stage, stage.name)
         pipeline.edge(stage, screen)
