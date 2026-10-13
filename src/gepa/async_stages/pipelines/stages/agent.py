@@ -296,7 +296,12 @@ class AgentPropose(WorkerStage[Proposal, Proposal]):
         target.write_text(parent_text)
         prompt = self.prompt(p)
         (ws / "PROMPT.md").write_text(prompt)
-        res = self.runner(prompt, ws, self.options)
+        opts = self.options
+        granted = item.granted.get("usd")
+        if granted is not None and granted < opts.max_usd:
+            # The engine granted less than the usual cap (the budget's last units): the session gets exactly that.
+            opts = AgentOptions(**{**opts.__dict__, "max_usd": round(float(granted), 2)})
+        res = self.runner(prompt, ws, opts)
         item.usage = {"usd": res.usd}
         child_text = target.read_text() if target.exists() else parent_text
         p.proposal_meta = {

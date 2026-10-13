@@ -112,12 +112,27 @@ class Usd:
             self._available -= units
             self._out += units
             return units
-        if self._out == 0:
+        if self._out <= self.EPSILON:
+            # Nothing in flight can come back. Whatever is left goes to this firing as a partial grant, so the
+            # last session runs with the remainder as its cap instead of being refused; below the floor it is
+            # not worth a firing and the run ends.
+            if self._available >= self.FLOOR:
+                got = self._available
+                self._available = 0.0
+                self._out += got
+                return got
             raise ResourceExhaustedError(f"{self.name}: {units} asked, {self._available} left and nothing in flight")
         return 0.0
 
+    #: Below this many units left, a partial grant is not worth a firing.
+    FLOOR = 0.5
+    #: Float residue from puts and charges that must not read as "something in flight".
+    EPSILON = 1e-6
+
     def put(self, units: float, used: float = 0.0) -> None:
         self._out = max(0.0, self._out - units - used)
+        if self._out <= self.EPSILON:
+            self._out = 0.0
         if self.cap is not None:
             self._available = min(self.cap, self._available + units)
 

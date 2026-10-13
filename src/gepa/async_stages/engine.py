@@ -334,6 +334,7 @@ class Engine:
         if index is not None:
             del place[index]
         item.usage = {}  # what this body reports used; a body that raises before annotating is charged nothing
+        item.granted = dict(taken)
         if stage.mode == "consume":
             item.wait_seconds[stage.name] = item.wait_seconds.get(stage.name, 0.0) + (
                 time.monotonic() - item.enqueued_at

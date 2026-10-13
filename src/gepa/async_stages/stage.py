@@ -55,6 +55,9 @@ class WorkItem(Generic[P]):
     outcome: str | None = None
     #: What the last body used, by resource; worker bodies annotate it for ``Stage.used`` to read.
     usage: dict[str, float] = field(default_factory=dict)
+    #: What the engine took for the current firing, by resource; a body that can bound its own spend (a session's
+    #: budget cap) reads it, since a budget resource may grant less than the demand when little is left.
+    granted: dict[str, float] = field(default_factory=dict)
     created_at: float = field(default_factory=time.monotonic)
     enqueued_at: float = 0.0
     stage_seconds: dict[str, float] = field(default_factory=dict)

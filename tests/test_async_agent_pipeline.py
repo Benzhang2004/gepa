@@ -9,7 +9,9 @@ import json
 import re
 from pathlib import Path
 
-from gepa.async_stages import Engine, HeadStage, Pipeline, WorkerStage, WorkItem
+import pytest
+
+from gepa.async_stages import Engine, HeadStage, Pipeline, ResourceExhaustedError, WorkerStage, WorkItem
 from gepa.async_stages.pipelines.stages.agent import AgentOptions, AgentResult, AgentTask
 from gepa.async_stages.resources import Usd
 from gepa.oa.config import OptimizeAnythingConfig
@@ -119,6 +121,52 @@ def test_usd_cap_holds_on_what_was_spent_not_what_was_predicted(tmp_path):
     assert work.fired == 2  # 3 + 3 spent against a cap of 5: the second firing's overshoot ends the run
     assert usd.available is not None and usd.available < 0
     assert stats["resources"]["usd"]["used"] == 6
+
+
+def test_usd_grants_the_remainder_to_the_last_firing_and_ignores_float_residue():
+    usd = Usd(5)
+    assert usd.take(3) == 3
+    usd.put(0, used=3.0000000000000004)  # float noise on a put must not read as "something in flight"
+    assert usd.take(3) == 2  # 2 left and nothing in flight: a partial grant, not a refusal
+    usd.put(0, used=2)
+    with pytest.raises(ResourceExhaustedError):
+        usd.take(3)
+
+
+def test_session_cap_follows_a_partial_grant(tmp_path):
+    """When the engine grants less than the session cap, the session runs with the grant as its cap."""
+    caps: list[float] = []
+
+    def runner(prompt: str, cwd: Path, opts: AgentOptions) -> AgentResult:
+        caps.append(opts.max_usd)
+        (cwd / "candidate.txt").write_text("value=9\n")
+        return AgentResult("ok", None, opts.max_usd, 10, 0.1, 1, "fake", None)
+
+    from gepa.async_stages.pipelines.stages.agent import AgentPropose
+    from gepa.async_stages.pipelines.stages.common import Deps, Proposal, StateBox
+
+    task = _task(tmp_path)
+    deps = Deps(
+        box=StateBox(),
+        server=None,
+        adapter=None,
+        reflection_lm=None,
+        trainset=None,
+        valset=None,  # type: ignore[arg-type]
+        rng=__import__("random").Random(0),
+        logger=type("L", (), {"log": lambda self, m: None})(),
+        run_dir=str(tmp_path / "run"),
+        seed_candidate={"current_candidate": "value=0\n"},
+        request_stop=lambda r: None,
+        str_candidate_key="current_candidate",
+    )
+    stage = AgentPropose(deps, task, runner=runner, options=AgentOptions(max_usd=6.0))
+    item: WorkItem[Proposal] = WorkItem(Proposal(parent_idx=0, parent={"current_candidate": "value=0\n"}))
+    item.granted = {"agent": 1.0, "usd": 2.5}
+    stage.run(item)
+    item.granted = {"agent": 1.0, "usd": 6.0}
+    stage.run(item)
+    assert caps == [2.5, 6.0]
 
 
 def test_engine_retires_a_stage(tmp_path):
