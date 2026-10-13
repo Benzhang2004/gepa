@@ -121,6 +121,12 @@ class Usd:
         if self.cap is not None:
             self._available = min(self.cap, self._available + units)
 
+    def charge(self, units: float) -> None:
+        """Spend beyond what was taken at dispatch (a body that cost more than its demand): drained from what is
+        left, so the next take sees the true remainder; it may go below zero, which ends the run at the next take."""
+        if self.cap is not None and units > 0:
+            self._available -= units
+
     def open(self) -> None:
         return
 

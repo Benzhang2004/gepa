@@ -102,6 +102,22 @@ def main() -> None:
     (run_dir / "best.py" if a.task == "takehome" else run_dir / "best.txt").write_text(str(result.best_candidate))
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
     print("SWARM END " + json.dumps(summary, default=str), flush=True)
+    plot_run(run_dir)
+
+
+def plot_run(run_dir: Path) -> None:
+    """The run's deliverable: best-so-far curves against wall time and dollars, drawn by the swarm repo's
+    ``tools/pareto_plot.py`` (``SWARM_TOOLS`` names its directory) into ``<run_dir>/figs``."""
+    tools = Path(os.environ.get("SWARM_TOOLS", "/data/benzhang04/swarm/tools"))
+    script = tools / "pareto_plot.py"
+    if not script.exists():
+        print(f"no pareto plot: {script} not found (set SWARM_TOOLS)", flush=True)
+        return
+    import subprocess
+    import sys
+
+    r = subprocess.run([sys.executable, str(script), "--out", str(run_dir / "figs"), str(run_dir)], capture_output=True, text=True)
+    print(("pareto figs under " + str(run_dir / "figs")) if r.returncode == 0 else ("pareto plot failed: " + r.stderr[-800:]), flush=True)
 
 
 if __name__ == "__main__":

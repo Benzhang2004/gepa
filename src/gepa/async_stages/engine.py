@@ -485,9 +485,16 @@ class Engine:
                 continue
             u = float(used.get(name, 0.0))
             back = max(0.0, units - u)
-            self.resources[name].put(back, used=min(u, units))
+            resource = self.resources[name]
+            resource.put(back, used=min(u, units))
+            if u > units:
+                # The body spent more than its demand (a session over its estimate): a budget resource is charged
+                # the overshoot too, so the cap holds on what was spent, not on what was predicted.
+                charge = getattr(resource, "charge", None)
+                if charge is not None:
+                    charge(u - units)
             self.events.resource(name).put_back += back
-            self.events.resource(name).used += min(u, units)
+            self.events.resource(name).used += u
             self._in_flight_units[name] -= units
 
     def _route(self, stage: Stage[Any, Any], item: WorkItem[Any]) -> None:

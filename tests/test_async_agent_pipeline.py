@@ -93,6 +93,34 @@ def test_engine_adds_stages_and_edges_while_running(tmp_path):
     assert "work_2" in status["stages"]
 
 
+class Overspend(WorkerStage[int, int]):
+    """Demands 1 dollar, reports 3 spent: the overshoot must count against the cap."""
+
+    in_type = out_type = int
+
+    def __init__(self, **kw):
+        super().__init__("work", bandwidth="cpu", demand={"usd": 1}, **kw)
+        self.fired = 0
+
+    def run(self, item):
+        self.fired += 1
+        item.usage = {"usd": 3}
+        return [item]
+
+
+def test_usd_cap_holds_on_what_was_spent_not_what_was_predicted(tmp_path):
+    source, work, commit = Source(), Overspend(), CommitStage()
+    pipeline = Pipeline().chain(source, work, commit, source)
+    usd = Usd(5)
+    engine = Engine(pipeline, {"usd": usd}, executors={"cpu": 1}, run_dir=None)
+    engine.inject("commit", 0)
+    stats = engine.run()
+    assert stats["stop_reason"] == "exhausted"
+    assert work.fired == 2  # 3 + 3 spent against a cap of 5: the second firing's overshoot ends the run
+    assert usd.available is not None and usd.available < 0
+    assert stats["resources"]["usd"]["used"] == 6
+
+
 def test_engine_retires_a_stage(tmp_path):
     source, work, commit = Source(), Work(), CommitStage()
     pipeline = Pipeline().chain(source, work, commit, source)
